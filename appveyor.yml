@@ -37,7 +37,7 @@ before_build:
 - cmake -Hcmake -Bcmake/build -G "Visual Studio %VS_VERSION%" -DCMAKE_GENERATOR_PLATFORM=%VS_PLATFORM% -Dprotobuf_BUILD_TESTS=OFF
 
 build:
-  project: cmake/build/%APPVEYOR_PROJECT_NAME%.sln
+  project: cmake/build/protobuf.sln
   parallel: true
   verbosity: minimal
 
