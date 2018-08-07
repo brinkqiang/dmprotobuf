@@ -34,14 +34,14 @@ environment:
   #   VS_PLATFORM: x64
 before_build:
 - git submodule update --init --recursive
-- pushd cmake
-- cmake -H. -Bbuild -G "Visual Studio %VS_VERSION%" -DCMAKE_GENERATOR_PLATFORM=%VS_PLATFORM% -Dprotobuf_BUILD_TESTS=OFF
-- popd
+
 
 build:
-  project: cmake\build\%APPVEYOR_PROJECT_NAME%.sln
-  parallel: true
-  verbosity: minimal
+- pushd cmake
+- mkdir -p build && cd build
+- cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -Dprotobuf_BUILD_TESTS=OFF
+- cmake --build .
+- popd
 
 test_script:
 # Environment variables https://www.appveyor.com/docs/environment-variables/
