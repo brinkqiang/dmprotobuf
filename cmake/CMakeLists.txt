@@ -9,7 +9,7 @@ endif()
 cmake_policy(SET CMP0022 NEW)
 
 # Project
-project(protobuf C CXX)
+project(dmprotobuf C CXX)
 
 LINK_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/../lib)
 
