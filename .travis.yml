@@ -73,7 +73,7 @@ before_script:
 script:
   - pushd cmake
   - mkdir -p build && cd build
-  - cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+  - cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -Dprotobuf_BUILD_TESTS=OFF
   - cmake --build .
   - popd
 
