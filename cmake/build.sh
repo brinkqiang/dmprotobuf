@@ -20,7 +20,7 @@ rm -rf build
 mkdir build
 pushd build
 cmake -DCMAKE_BUILD_TYPE=relwithdebinfo -Dprotobuf_BUILD_TESTS=OFF ..
-make -j
+cmake --build .
 popd
 
 # popd
