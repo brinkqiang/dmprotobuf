@@ -11,6 +11,11 @@ cmake_policy(SET CMP0022 NEW)
 # Project
 project(protobuf C CXX)
 
+LINK_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/../lib)
+
+SET(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../bin)
+SET(LIBRARY_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../lib)
+
 # Options
 option(protobuf_BUILD_TESTS "Build tests" ON)
 option(protobuf_BUILD_EXAMPLES "Build examples" OFF)
