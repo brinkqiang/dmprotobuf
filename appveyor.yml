@@ -39,7 +39,7 @@ before_build:
 - popd
 
 build:
-  project: build\%APPVEYOR_PROJECT_NAME%.sln
+  project: cmake\build\%APPVEYOR_PROJECT_NAME%.sln
   parallel: true
   verbosity: minimal
 
