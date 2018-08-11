@@ -19,7 +19,7 @@ sh configure
 rm -rf build
 mkdir build
 pushd build
-cmake -DCMAKE_BUILD_TYPE=relwithdebinfo -Dprotobuf_BUILD_TESTS=OFF ..
+cmake -DCMAKE_BUILD_TYPE=relwithdebinfo ..
 cmake --build .
 popd
 

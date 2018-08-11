@@ -17,7 +17,7 @@ SET(EXECUTABLE_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../bin)
 SET(LIBRARY_OUTPUT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../lib)
 
 # Options
-option(protobuf_BUILD_TESTS "Build tests" ON)
+option(protobuf_BUILD_TESTS "Build tests" OFF)
 option(protobuf_BUILD_EXAMPLES "Build examples" OFF)
 if (BUILD_SHARED_LIBS)
   set(protobuf_BUILD_SHARED_LIBS_DEFAULT ON)
