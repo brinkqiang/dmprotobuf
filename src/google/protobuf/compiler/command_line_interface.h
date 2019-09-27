@@ -200,7 +200,7 @@ class LIBPROTOC_EXPORT CommandLineInterface {
   }
 
 
- private:
+  public :
   // -----------------------------------------------------------------
 
   class ErrorPrinter;
@@ -412,11 +412,6 @@ class LIBPROTOC_EXPORT CommandLineInterface {
   // If --dependency_out was given, this is the path to the file where the
   // dependency file will be written. Otherwise, empty.
   string dependency_out_name_;
-
-  // Path to a file that contains serialized AccessInfo which provides
-  // relative hotness of fields per message. This helps protoc to generate
-  // better code.
-  string profile_path_;
 
   // True if --include_imports was given, meaning that we should
   // write all transitive dependencies to the DescriptorSet.  Otherwise, only

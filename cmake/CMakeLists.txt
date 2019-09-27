@@ -1,5 +1,5 @@
 # Minimum CMake required
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.1.3)
 
 if(protobuf_VERBOSE)
   message(STATUS "Protocol Buffers Configuring...")
@@ -8,17 +8,36 @@ endif()
 # CMake policies
 cmake_policy(SET CMP0022 NEW)
 
+if(POLICY CMP0048)
+  cmake_policy(SET CMP0048 NEW)
+endif()
+
 # Project
 project(protobuf C CXX)
 
-LINK_DIRECTORIES(${CMAKE_SOURCE_DIR}/lib)
+IF (WIN32)
+  LINK_DIRECTORIES(${CMAKE_SOURCE_DIR}/bin)
+  SET(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin)
+  SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin)
+ELSE(WIN32)
+  LINK_DIRECTORIES(${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE})
+  SET(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE})
+  SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE})
+ENDIF(WIN32)
 
-SET(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin)
-SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)
+# Add c++11 flags
+if (CYGWIN)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
+else()
+  set(CMAKE_CXX_STANDARD 11)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+endif()
 
 # Options
 option(protobuf_BUILD_TESTS "Build tests" OFF)
 option(protobuf_BUILD_EXAMPLES "Build examples" OFF)
+option(protobuf_BUILD_PROTOC_BINARIES "Build libprotoc and protoc compiler" ON)
 if (BUILD_SHARED_LIBS)
   set(protobuf_BUILD_SHARED_LIBS_DEFAULT ON)
 else (BUILD_SHARED_LIBS)
@@ -28,11 +47,7 @@ option(protobuf_BUILD_SHARED_LIBS "Build Shared Libraries" ${protobuf_BUILD_SHAR
 include(CMakeDependentOption)
 cmake_dependent_option(protobuf_MSVC_STATIC_RUNTIME "Link static runtime libraries" ON
   "NOT protobuf_BUILD_SHARED_LIBS" OFF)
-if (MSVC)
-  set(protobuf_WITH_ZLIB_DEFAULT OFF)
-else (MSVC)
-  set(protobuf_WITH_ZLIB_DEFAULT ON)
-endif (MSVC)
+set(protobuf_WITH_ZLIB_DEFAULT OFF)
 option(protobuf_WITH_ZLIB "Build with zlib support" ${protobuf_WITH_ZLIB_DEFAULT})
 set(protobuf_DEBUG_POSTFIX "d"
   CACHE STRING "Default debug postfix")
@@ -126,15 +141,15 @@ else (protobuf_BUILD_SHARED_LIBS)
   # https://msdn.microsoft.com/en-us/library/2kzt1wy3.aspx
   # This is achieved by replacing msvc option /MD with /MT and /MDd with /MTd
   # http://www.cmake.org/Wiki/CMake_FAQ#How_can_I_build_my_MSVC_application_with_a_static_runtime.3F
-  if (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
-    foreach(flag_var
-        CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
-        CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-      if(${flag_var} MATCHES "/MD")
-        string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
-      endif(${flag_var} MATCHES "/MD")
-    endforeach(flag_var)
-  endif (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
+  # if (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
+  #   foreach(flag_var
+  #       CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+  #       CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+  #     if(${flag_var} MATCHES "/MD")
+  #       string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+  #     endif(${flag_var} MATCHES "/MD")
+  #   endforeach(flag_var)
+  # endif (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
 endif (protobuf_BUILD_SHARED_LIBS)
 
 if (MSVC)
@@ -162,7 +177,7 @@ if (MSVC)
   string(REPLACE "/" "\\" PROTOBUF_SOURCE_WIN32_PATH ${protobuf_SOURCE_DIR})
   string(REPLACE "/" "\\" PROTOBUF_BINARY_WIN32_PATH ${protobuf_BINARY_DIR})
   configure_file(extract_includes.bat.in extract_includes.bat)
-  
+
   # Suppress linker warnings about files with no symbols defined.
   set(CMAKE_STATIC_LINKER_FLAGS /ignore:4221)
 endif (MSVC)
@@ -189,8 +204,10 @@ endif (protobuf_UNICODE)
 
 include(libprotobuf-lite.cmake)
 include(libprotobuf.cmake)
-include(libprotoc.cmake)
-include(protoc.cmake)
+if (protobuf_BUILD_PROTOC_BINARIES)
+  include(libprotoc.cmake)
+  include(protoc.cmake)
+endif (protobuf_BUILD_PROTOC_BINARIES)
 
 if (protobuf_BUILD_TESTS)
   include(tests.cmake)
