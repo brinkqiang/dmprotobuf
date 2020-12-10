@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # - install depends tools
 # yum -y install git
