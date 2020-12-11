@@ -35,14 +35,10 @@
 #include <string>
 
 #include <google/protobuf/stubs/common.h>
-#include <google/protobuf/stubs/stringpiece.h>
+#include <google/protobuf/stubs/strutil.h>
 #include <google/protobuf/stubs/status.h>
 
 #include <google/protobuf/port_def.inc>
-
-namespace util {
-class Status;
-}  // namespace util
 
 namespace google {
 namespace protobuf {
@@ -134,7 +130,7 @@ class PROTOBUF_EXPORT JsonStreamParser {
   };
 
   // Parses a single chunk of JSON, returning an error if the JSON was invalid.
-  util::Status ParseChunk(StringPiece json);
+  util::Status ParseChunk(StringPiece chunk);
 
   // Runs the parser based on stack_ and p_, until the stack is empty or p_ runs
   // out of data. If we unexpectedly run out of p_ we push the latest back onto
@@ -168,7 +164,8 @@ class PROTOBUF_EXPORT JsonStreamParser {
   util::Status ParseNumberHelper(NumberResult* result);
 
   // Parse a number as double into a NumberResult.
-  util::Status ParseDoubleHelper(const std::string& number, NumberResult* result);
+  util::Status ParseDoubleHelper(const std::string& number,
+                                   NumberResult* result);
 
   // Handles a { during parsing of a value.
   util::Status HandleBeginObject();
@@ -272,9 +269,16 @@ class PROTOBUF_EXPORT JsonStreamParser {
   // Whether to allow non UTF-8 encoded input and replace invalid code points.
   bool coerce_to_utf8_;
 
+  // Replacement character for invalid UTF-8 code points.
+  std::string utf8_replacement_character_;
+
   // Whether allows empty string represented null array value or object entry
   // value.
   bool allow_empty_null_;
+
+  // Whether unquoted object keys can contain embedded non-alphanumeric
+  // characters when this is unambiguous for parsing.
+  bool allow_permissive_key_naming_;
 
   // Whether allows out-of-range floating point numbers or reject them.
   bool loose_float_number_conversion_;

@@ -38,7 +38,8 @@
 
 #include <google/protobuf/stubs/callback.h>
 #include <google/protobuf/stubs/common.h>
-#include <google/protobuf/stubs/stringpiece.h>
+#include <google/protobuf/stubs/status.h>
+#include <google/protobuf/stubs/strutil.h>
 #include <google/protobuf/stubs/status.h>
 
 namespace google {
@@ -54,7 +55,7 @@ typedef std::function<util::Status(StringPiece)> PathSinkCallback;
 // converting their content. Escaping is supported within quoted strings.
 // For example, "ab\"_c" will be returned as "ab\"_c" without any changes.
 std::string ConvertFieldMaskPath(const StringPiece path,
-                            ConverterCallback converter);
+                                 ConverterCallback converter);
 
 // Decodes a compact list of FieldMasks. For example, "a.b,a.c.d,a.c.e" will be
 // decoded into a list of field paths - "a.b", "a.c.d", "a.c.e". And the results
@@ -63,7 +64,7 @@ std::string ConvertFieldMaskPath(const StringPiece path,
 // Note that we also support Apiary style FieldMask form. The above example in
 // the Apiary style will look like "a.b,a.c(d,e)".
 util::Status DecodeCompactFieldMaskPaths(StringPiece paths,
-                                           PathSinkCallback path_sink);
+                                         PathSinkCallback path_sink);
 
 }  // namespace converter
 }  // namespace util

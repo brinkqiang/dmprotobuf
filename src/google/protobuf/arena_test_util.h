@@ -78,14 +78,13 @@ namespace internal {
 
 class NoHeapChecker {
  public:
-  NoHeapChecker() {
-    capture_alloc.Hook();
-  }
+  NoHeapChecker() { capture_alloc.Hook(); }
   ~NoHeapChecker();
+
  private:
   class NewDeleteCapture {
    public:
-    // TOOD(xiaofeng): Implement this for opensource protobuf.
+    // TODO(xiaofeng): Implement this for opensource protobuf.
     void Hook() {}
     void Unhook() {}
     int alloc_count() { return 0; }

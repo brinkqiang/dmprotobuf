@@ -36,7 +36,6 @@
 #include <google/protobuf/map_field_lite.h>
 #include <google/protobuf/message_lite.h>
 #include <google/protobuf/wire_format_lite.h>
-#include <google/protobuf/wire_format_lite_inl.h>
 
 // We require C++11 and Clang to use constexpr for variables, as GCC 4.8
 // requires constexpr to be consistent between declarations of variables
@@ -74,9 +73,7 @@ enum ProcessingTypes {
   TYPE_STRING_STRING_PIECE = 20,
   TYPE_BYTES_CORD = 21,
   TYPE_BYTES_STRING_PIECE = 22,
-  TYPE_STRING_INLINED = 23,
-  TYPE_BYTES_INLINED = 24,
-  TYPE_MAP = 25,
+  TYPE_MAP = 23,
 };
 
 static_assert(TYPE_MAP < kRepeatedMask, "Invalid enum");
@@ -103,18 +100,16 @@ struct PROTOBUF_EXPORT FieldMetadata {
     kNumTypeClasses  // must be last enum
   };
   // C++ protobuf has 20 fundamental types, were we added Cord and StringPiece
-  // and also distinquish the same types if they have different wire format.
+  // and also distinguish the same types if they have different wire format.
   enum {
     kCordType = 19,
     kStringPieceType = 20,
-    kInlinedType = 21,
-    kNumTypes = 21,
+    kNumTypes = 20,
     kSpecial = kNumTypes * kNumTypeClasses,
   };
 
   static int CalculateType(int fundamental_type, FieldTypeClass type_class);
 };
-
 
 // TODO(ckennelly):  Add a static assertion to ensure that these masks do not
 // conflict with wiretypes.
@@ -122,7 +117,7 @@ struct PROTOBUF_EXPORT FieldMetadata {
 // ParseTableField is kept small to help simplify instructions for computing
 // offsets, as we will always need this information to parse a field.
 // Additional data, needed for some types, is stored in
-// AuxillaryParseTableField.
+// AuxiliaryParseTableField.
 struct ParseTableField {
   uint32 offset;
   // The presence_index ordinarily represents a has_bit index, but for fields
@@ -140,7 +135,7 @@ struct ParseTableField {
 
 struct ParseTable;
 
-union AuxillaryParseTableField {
+union AuxiliaryParseTableField {
   typedef bool (*EnumValidator)(int);
 
   // Enums
@@ -171,20 +166,20 @@ union AuxillaryParseTableField {
   };
   map_aux maps;
 
-  AuxillaryParseTableField() = default;
-  constexpr AuxillaryParseTableField(AuxillaryParseTableField::enum_aux e)
+  AuxiliaryParseTableField() = default;
+  constexpr AuxiliaryParseTableField(AuxiliaryParseTableField::enum_aux e)
       : enums(e) {}
-  constexpr AuxillaryParseTableField(AuxillaryParseTableField::message_aux m)
+  constexpr AuxiliaryParseTableField(AuxiliaryParseTableField::message_aux m)
       : messages(m) {}
-  constexpr AuxillaryParseTableField(AuxillaryParseTableField::string_aux s)
+  constexpr AuxiliaryParseTableField(AuxiliaryParseTableField::string_aux s)
       : strings(s) {}
-  constexpr AuxillaryParseTableField(AuxillaryParseTableField::map_aux m)
+  constexpr AuxiliaryParseTableField(AuxiliaryParseTableField::map_aux m)
       : maps(m) {}
 };
 
 struct ParseTable {
   const ParseTableField* fields;
-  const AuxillaryParseTableField* aux;
+  const AuxiliaryParseTableField* aux;
   int max_field_number;
   // TODO(ckennelly): Do something with this padding.
 
@@ -209,21 +204,18 @@ static_assert(sizeof(ParseTableField) <= 16, "ParseTableField is too large");
 // The tables must be composed of POD components to ensure link-time
 // initialization.
 static_assert(std::is_pod<ParseTableField>::value, "");
-static_assert(std::is_pod<AuxillaryParseTableField::enum_aux>::value, "");
-static_assert(std::is_pod<AuxillaryParseTableField::message_aux>::value, "");
-static_assert(std::is_pod<AuxillaryParseTableField::string_aux>::value, "");
+static_assert(std::is_pod<AuxiliaryParseTableField>::value, "");
+static_assert(std::is_pod<AuxiliaryParseTableField::enum_aux>::value, "");
+static_assert(std::is_pod<AuxiliaryParseTableField::message_aux>::value, "");
+static_assert(std::is_pod<AuxiliaryParseTableField::string_aux>::value, "");
 static_assert(std::is_pod<ParseTable>::value, "");
-
-#ifndef __NVCC__  // This assertion currently fails under NVCC.
-static_assert(std::is_pod<AuxillaryParseTableField>::value, "");
-#endif
 
 // TODO(ckennelly): Consolidate these implementations into a single one, using
 // dynamic dispatch to the appropriate unknown field handler.
 bool MergePartialFromCodedStream(MessageLite* msg, const ParseTable& table,
                                  io::CodedInputStream* input);
 bool MergePartialFromCodedStreamLite(MessageLite* msg, const ParseTable& table,
-                                 io::CodedInputStream* input);
+                                     io::CodedInputStream* input);
 
 template <typename Entry>
 bool ParseMap(io::CodedInputStream* input, void* map_field) {
@@ -277,23 +269,24 @@ inline uint8* TableSerializeToArray(const MessageLite& msg,
 
 template <typename T>
 struct CompareHelper {
-  bool operator()(const T& a, const T& b) { return a < b; }
+  bool operator()(const T& a, const T& b) const { return a < b; }
 };
 
 template <>
 struct CompareHelper<ArenaStringPtr> {
-  bool operator()(const ArenaStringPtr& a, const ArenaStringPtr& b) {
+  bool operator()(const ArenaStringPtr& a, const ArenaStringPtr& b) const {
     return a.Get() < b.Get();
   }
 };
 
 struct CompareMapKey {
   template <typename T>
-  bool operator()(const MapEntryHelper<T>& a, const MapEntryHelper<T>& b) {
+  bool operator()(const MapEntryHelper<T>& a,
+                  const MapEntryHelper<T>& b) const {
     return Compare(a.key_, b.key_);
   }
   template <typename T>
-  bool Compare(const T& a, const T& b) {
+  bool Compare(const T& a, const T& b) const {
     return CompareHelper<T>()(a, b);
   }
 };

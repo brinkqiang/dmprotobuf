@@ -29,9 +29,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endregion
-    
+
 using System;
+using System.Buffers;
 using System.IO;
+using System.Security;
 
 namespace Google.Protobuf
 {
@@ -45,10 +47,13 @@ namespace Google.Protobuf
         // TODO: When we use a C# 7.1 compiler, make this private protected.
         internal bool DiscardUnknownFields { get; }
 
-        internal MessageParser(Func<IMessage> factory, bool discardUnknownFields)
+        internal ExtensionRegistry Extensions { get; }
+
+        internal MessageParser(Func<IMessage> factory, bool discardUnknownFields, ExtensionRegistry extensions)
         {
             this.factory = factory;
             DiscardUnknownFields = discardUnknownFields;
+            Extensions = extensions;
         }
 
         /// <summary>
@@ -68,8 +73,7 @@ namespace Google.Protobuf
         public IMessage ParseFrom(byte[] data)
         {
             IMessage message = factory();
-            message.MergeFrom(data, DiscardUnknownFields);
-            CheckMergedRequiredFields(message);
+            message.MergeFrom(data, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -83,8 +87,7 @@ namespace Google.Protobuf
         public IMessage ParseFrom(byte[] data, int offset, int length)
         {
             IMessage message = factory();
-            message.MergeFrom(data, offset, length, DiscardUnknownFields);
-            CheckMergedRequiredFields(message);
+            message.MergeFrom(data, offset, length, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -96,8 +99,7 @@ namespace Google.Protobuf
         public IMessage ParseFrom(ByteString data)
         {
             IMessage message = factory();
-            message.MergeFrom(data, DiscardUnknownFields);
-            CheckMergedRequiredFields(message);
+            message.MergeFrom(data, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -109,8 +111,20 @@ namespace Google.Protobuf
         public IMessage ParseFrom(Stream input)
         {
             IMessage message = factory();
-            message.MergeFrom(input, DiscardUnknownFields);
-            CheckMergedRequiredFields(message);
+            message.MergeFrom(input, DiscardUnknownFields, Extensions);
+            return message;
+        }
+
+        /// <summary>
+        /// Parses a message from the given sequence.
+        /// </summary>
+        /// <param name="data">The data to parse.</param>
+        /// <returns>The parsed message.</returns>
+        [SecuritySafeCritical]
+        public IMessage ParseFrom(ReadOnlySequence<byte> data)
+        {
+            IMessage message = factory();
+            message.MergeFrom(data, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -126,8 +140,7 @@ namespace Google.Protobuf
         public IMessage ParseDelimitedFrom(Stream input)
         {
             IMessage message = factory();
-            message.MergeDelimitedFrom(input, DiscardUnknownFields);
-            CheckMergedRequiredFields(message);
+            message.MergeDelimitedFrom(input, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -140,7 +153,6 @@ namespace Google.Protobuf
         {
             IMessage message = factory();
             MergeFrom(message, input);
-            CheckMergedRequiredFields(message);
             return message;
         }
 
@@ -173,19 +185,21 @@ namespace Google.Protobuf
             }
         }
 
-        internal static void CheckMergedRequiredFields(IMessage message)
-        {
-            if (!message.IsInitialized())
-                throw new InvalidOperationException("Parsed message does not contain all required fields");
-        }
-
         /// <summary>
         /// Creates a new message parser which optionally discards unknown fields when parsing.
         /// </summary>
         /// <param name="discardUnknownFields">Whether or not to discard unknown fields when parsing.</param>
         /// <returns>A newly configured message parser.</returns>
         public MessageParser WithDiscardUnknownFields(bool discardUnknownFields) =>
-            new MessageParser(factory, discardUnknownFields);
+            new MessageParser(factory, discardUnknownFields, Extensions);
+
+        /// <summary>
+        /// Creates a new message parser which registers extensions from the specified registry upon creating the message instance
+        /// </summary>
+        /// <param name="registry">The extensions to register</param>
+        /// <returns>A newly configured message parser.</returns>
+        public MessageParser WithExtensionRegistry(ExtensionRegistry registry) =>
+            new MessageParser(factory, DiscardUnknownFields, registry);
     }
 
     /// <summary>
@@ -210,7 +224,7 @@ namespace Google.Protobuf
         // The current implementation avoids a virtual method call and a cast, which *may* be significant in some cases.
         // Benchmarking work is required to measure the significance - but it's only a few lines of code in any case.
         // The API wouldn't change anyway - just the implementation - so this work can be deferred.
-        private readonly Func<T> factory; 
+        private readonly Func<T> factory;
 
         /// <summary>
         /// Creates a new parser.
@@ -220,11 +234,11 @@ namespace Google.Protobuf
         /// to require a parameterless constructor: delegates are significantly faster to execute.
         /// </remarks>
         /// <param name="factory">Function to invoke when a new, empty message is required.</param>
-        public MessageParser(Func<T> factory) : this(factory, false)
+        public MessageParser(Func<T> factory) : this(factory, false, null)
         {
         }
 
-        internal MessageParser(Func<T> factory, bool discardUnknownFields) : base(() => factory(), discardUnknownFields)
+        internal MessageParser(Func<T> factory, bool discardUnknownFields, ExtensionRegistry extensions) : base(() => factory(), discardUnknownFields, extensions)
         {
             this.factory = factory;
         }
@@ -246,7 +260,7 @@ namespace Google.Protobuf
         public new T ParseFrom(byte[] data)
         {
             T message = factory();
-            message.MergeFrom(data, DiscardUnknownFields);
+            message.MergeFrom(data, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -260,7 +274,7 @@ namespace Google.Protobuf
         public new T ParseFrom(byte[] data, int offset, int length)
         {
             T message = factory();
-            message.MergeFrom(data, offset, length, DiscardUnknownFields);
+            message.MergeFrom(data, offset, length, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -272,7 +286,7 @@ namespace Google.Protobuf
         public new T ParseFrom(ByteString data)
         {
             T message = factory();
-            message.MergeFrom(data, DiscardUnknownFields);
+            message.MergeFrom(data, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -284,7 +298,20 @@ namespace Google.Protobuf
         public new T ParseFrom(Stream input)
         {
             T message = factory();
-            message.MergeFrom(input, DiscardUnknownFields);
+            message.MergeFrom(input, DiscardUnknownFields, Extensions);
+            return message;
+        }
+
+        /// <summary>
+        /// Parses a message from the given sequence.
+        /// </summary>
+        /// <param name="data">The data to parse.</param>
+        /// <returns>The parsed message.</returns>
+        [SecuritySafeCritical]
+        public new T ParseFrom(ReadOnlySequence<byte> data)
+        {
+            T message = factory();
+            message.MergeFrom(data, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -300,7 +327,7 @@ namespace Google.Protobuf
         public new T ParseDelimitedFrom(Stream input)
         {
             T message = factory();
-            message.MergeDelimitedFrom(input, DiscardUnknownFields);
+            message.MergeDelimitedFrom(input, DiscardUnknownFields, Extensions);
             return message;
         }
 
@@ -336,6 +363,14 @@ namespace Google.Protobuf
         /// <param name="discardUnknownFields">Whether or not to discard unknown fields when parsing.</param>
         /// <returns>A newly configured message parser.</returns>
         public new MessageParser<T> WithDiscardUnknownFields(bool discardUnknownFields) =>
-            new MessageParser<T>(factory, discardUnknownFields);
+            new MessageParser<T>(factory, discardUnknownFields, Extensions);
+
+        /// <summary>
+        /// Creates a new message parser which registers extensions from the specified registry upon creating the message instance
+        /// </summary>
+        /// <param name="registry">The extensions to register</param>
+        /// <returns>A newly configured message parser.</returns>
+        public new MessageParser<T> WithExtensionRegistry(ExtensionRegistry registry) =>
+            new MessageParser<T>(factory, DiscardUnknownFields, registry);
     }
 }

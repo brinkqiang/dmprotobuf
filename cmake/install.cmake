@@ -6,9 +6,9 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/protobuf-lite.pc.cmake
                ${CMAKE_CURRENT_BINARY_DIR}/protobuf-lite.pc @ONLY)
 
 set(_protobuf_libraries libprotobuf-lite libprotobuf)
-if (protobuf_BUILD_PROTOC_BINARIES)
+if (protobuf_BUILD_LIBPROTOC)
     list(APPEND _protobuf_libraries libprotoc)
-endif (protobuf_BUILD_PROTOC_BINARIES)
+endif (protobuf_BUILD_LIBPROTOC)
 
 foreach(_library ${_protobuf_libraries})
   set_property(TARGET ${_library}
@@ -33,7 +33,7 @@ if (protobuf_BUILD_PROTOC_BINARIES)
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT protoc)
   if (UNIX AND NOT APPLE)
     set_property(TARGET protoc
-      PROPERTY INSTALL_RPATH "$ORIGIN/../lib")
+      PROPERTY INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
   elseif (APPLE)
     set_property(TARGET protoc
       PROPERTY INSTALL_RPATH "@loader_path/../lib")

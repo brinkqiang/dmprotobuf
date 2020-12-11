@@ -35,24 +35,26 @@
 #include <google/protobuf/generated_message_util.h>
 
 #include <limits>
+
+#ifndef GOOGLE_PROTOBUF_SUPPORT_WINDOWS_XP
 // We're only using this as a standard way for getting the thread id.
 // We're not using any thread functionality.
 #include <thread>  // NOLINT
+#endif             // #ifndef GOOGLE_PROTOBUF_SUPPORT_WINDOWS_XP
+
 #include <vector>
 
-#include <google/protobuf/io/coded_stream_inl.h>
 #include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/arenastring.h>
 #include <google/protobuf/extension_set.h>
 #include <google/protobuf/generated_message_table_driven.h>
 #include <google/protobuf/message_lite.h>
 #include <google/protobuf/metadata_lite.h>
 #include <google/protobuf/stubs/mutex.h>
+#include <google/protobuf/port_def.inc>
 #include <google/protobuf/repeated_field.h>
 #include <google/protobuf/wire_format_lite.h>
-#include <google/protobuf/wire_format_lite_inl.h>
-
-#include <google/protobuf/port_def.inc>
 
 
 namespace google {
@@ -62,23 +64,34 @@ namespace internal {
 void DestroyMessage(const void* message) {
   static_cast<const MessageLite*>(message)->~MessageLite();
 }
-void DestroyString(const void* s) { static_cast<const string*>(s)->~string(); }
+void DestroyString(const void* s) {
+  static_cast<const std::string*>(s)->~basic_string();
+}
 
-ExplicitlyConstructed<::std::string> fixed_address_empty_string;
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT EmptyString
+    fixed_address_empty_string;  // NOLINT
 
 
+PROTOBUF_CONSTINIT std::atomic<bool> init_protobuf_defaults_state{false};
 static bool InitProtobufDefaultsImpl() {
-  fixed_address_empty_string.DefaultConstruct();
-  OnShutdownDestroyString(fixed_address_empty_string.get_mutable());
+  ::new (static_cast<void*>(&fixed_address_empty_string.value)) std::string();
+  OnShutdownDestroyString(&fixed_address_empty_string.value);
+
+  // Verify that we can indeed get the address during constant evaluation.
+  PROTOBUF_CONSTINIT static const std::string& fixed_address_empty_string_test =
+      GetEmptyStringAlreadyInited();
+  (void)fixed_address_empty_string_test;
+
+  init_protobuf_defaults_state.store(true, std::memory_order_release);
   return true;
 }
 
-void InitProtobufDefaults() {
+void InitProtobufDefaultsSlow() {
   static bool is_inited = InitProtobufDefaultsImpl();
   (void)is_inited;
 }
 
-size_t StringSpaceUsedExcludingSelfLong(const string& str) {
+size_t StringSpaceUsedExcludingSelfLong(const std::string& str) {
   const void* start = &str;
   const void* end = &str + 1;
   if (start <= str.data() && str.data() < end) {
@@ -225,7 +238,7 @@ struct PrimitiveTypeHelper<WireFormatLite::TYPE_DOUBLE>
 
 template <>
 struct PrimitiveTypeHelper<WireFormatLite::TYPE_STRING> {
-  typedef string Type;
+  typedef std::string Type;
   static void Serialize(const void* ptr, io::CodedOutputStream* output) {
     const Type& value = *static_cast<const Type*>(ptr);
     output->WriteVarint32(value.size());
@@ -241,10 +254,6 @@ template <>
 struct PrimitiveTypeHelper<WireFormatLite::TYPE_BYTES>
     : PrimitiveTypeHelper<WireFormatLite::TYPE_STRING> {};
 
-
-template <>
-struct PrimitiveTypeHelper<FieldMetadata::kInlinedType>
-    : PrimitiveTypeHelper<WireFormatLite::TYPE_STRING> {};
 
 // We want to serialize to both CodedOutputStream and directly into byte arrays
 // without duplicating the code. In fact we might want extra output channels in
@@ -294,15 +303,11 @@ void SerializeMessageNoTable(const MessageLite* msg,
 }
 
 void SerializeMessageNoTable(const MessageLite* msg, ArrayOutput* output) {
-  if (output->is_deterministic) {
-    io::ArrayOutputStream array_stream(output->ptr, INT_MAX);
-    io::CodedOutputStream o(&array_stream);
-    o.SetSerializationDeterministic(true);
-    msg->SerializeWithCachedSizes(&o);
-    output->ptr += o.ByteCount();
-  } else {
-    output->ptr = msg->InternalSerializeWithCachedSizesToArray(output->ptr);
-  }
+  io::ArrayOutputStream array_stream(output->ptr, INT_MAX);
+  io::CodedOutputStream o(&array_stream);
+  o.SetSerializationDeterministic(output->is_deterministic);
+  msg->SerializeWithCachedSizes(&o);
+  output->ptr += o.ByteCount();
 }
 
 // Helper to branch to fast path if possible
@@ -311,16 +316,6 @@ void SerializeMessageDispatch(const MessageLite& msg,
                               int32 cached_size,
                               io::CodedOutputStream* output) {
   const uint8* base = reinterpret_cast<const uint8*>(&msg);
-  if (!output->IsSerializationDeterministic()) {
-    // Try the fast path
-    uint8* ptr = output->GetDirectBufferForNBytesAndAdvance(cached_size);
-    if (ptr) {
-      // We use virtual dispatch to enable dedicated generated code for the
-      // fast path.
-      msg.InternalSerializeWithCachedSizesToArray(ptr);
-      return;
-    }
-  }
   SerializeInternal(base, field_table, num_fields, output);
 }
 
@@ -418,15 +413,6 @@ struct SingularFieldHelper<WireFormatLite::TYPE_MESSAGE> {
   }
 };
 
-template <>
-struct SingularFieldHelper<FieldMetadata::kInlinedType> {
-  template <typename O>
-  static void Serialize(const void* field, const FieldMetadata& md, O* output) {
-    WriteTagTo(md.tag, output);
-    SerializeTo<FieldMetadata::kInlinedType>(&Get<::std::string>(field), output);
-  }
-};
-
 template <int type>
 struct RepeatedFieldHelper {
   template <typename O>
@@ -492,16 +478,12 @@ struct RepeatedFieldHelper<WireFormatLite::TYPE_MESSAGE> {
     for (int i = 0; i < AccessorHelper::Size(array); i++) {
       WriteTagTo(md.tag, output);
       SerializeMessageTo(
-          static_cast<const MessageLite*>(AccessorHelper::Get(array, i)), md.ptr,
-          output);
+          static_cast<const MessageLite*>(AccessorHelper::Get(array, i)),
+          md.ptr, output);
     }
   }
 };
 
-
-template <>
-struct RepeatedFieldHelper<FieldMetadata::kInlinedType>
-    : RepeatedFieldHelper<WireFormatLite::TYPE_STRING> {};
 
 template <int type>
 struct PackedFieldHelper {
@@ -538,9 +520,6 @@ struct PackedFieldHelper<WireFormatLite::TYPE_GROUP>
 template <>
 struct PackedFieldHelper<WireFormatLite::TYPE_MESSAGE>
     : PackedFieldHelper<WireFormatLite::TYPE_STRING> {};
-template <>
-struct PackedFieldHelper<FieldMetadata::kInlinedType>
-    : PackedFieldHelper<WireFormatLite::TYPE_STRING> {};
 
 template <int type>
 struct OneOfFieldHelper {
@@ -550,15 +529,6 @@ struct OneOfFieldHelper {
   }
 };
 
-
-template <>
-struct OneOfFieldHelper<FieldMetadata::kInlinedType> {
-  template <typename O>
-  static void Serialize(const void* field, const FieldMetadata& md, O* output) {
-    SingularFieldHelper<FieldMetadata::kInlinedType>::Serialize(
-        Get<const ::std::string*>(field), md, output);
-  }
-};
 
 void SerializeNotImplemented(int field) {
   GOOGLE_LOG(FATAL) << "Not implemented field number " << field;
@@ -599,11 +569,6 @@ bool IsNull<WireFormatLite::TYPE_MESSAGE>(const void* ptr) {
   return Get<const MessageLite*>(ptr) == NULL;
 }
 
-
-template <>
-bool IsNull<FieldMetadata::kInlinedType>(const void* ptr) {
-  return static_cast<const ::std::string*>(ptr)->empty();
-}
 
 #define SERIALIZERS_FOR_TYPE(type)                                            \
   case SERIALIZE_TABLE_OP(type, FieldMetadata::kPresence):                    \
@@ -652,14 +617,13 @@ void SerializeInternal(const uint8* base,
       SERIALIZERS_FOR_TYPE(WireFormatLite::TYPE_SFIXED64);
       SERIALIZERS_FOR_TYPE(WireFormatLite::TYPE_SINT32);
       SERIALIZERS_FOR_TYPE(WireFormatLite::TYPE_SINT64);
-      SERIALIZERS_FOR_TYPE(FieldMetadata::kInlinedType);
 
       // Special cases
       case FieldMetadata::kSpecial:
         func = reinterpret_cast<SpecialSerializer>(
             const_cast<void*>(field_metadata.ptr));
-        func (base, field_metadata.offset, field_metadata.tag,
-            field_metadata.has_offset, output);
+        func(base, field_metadata.offset, field_metadata.tag,
+             field_metadata.has_offset, output);
         break;
       default:
         // __builtin_unreachable()
@@ -697,16 +661,15 @@ uint8* SerializeInternalToArray(const uint8* base,
       SERIALIZERS_FOR_TYPE(WireFormatLite::TYPE_SFIXED64);
       SERIALIZERS_FOR_TYPE(WireFormatLite::TYPE_SINT32);
       SERIALIZERS_FOR_TYPE(WireFormatLite::TYPE_SINT64);
-      SERIALIZERS_FOR_TYPE(FieldMetadata::kInlinedType);
       // Special cases
       case FieldMetadata::kSpecial: {
         io::ArrayOutputStream array_stream(array_output.ptr, INT_MAX);
         io::CodedOutputStream output(&array_stream);
         output.SetSerializationDeterministic(is_deterministic);
-                func =  reinterpret_cast<SpecialSerializer>(
+        func = reinterpret_cast<SpecialSerializer>(
             const_cast<void*>(field_metadata.ptr));
-                func (base, field_metadata.offset, field_metadata.tag,
-            field_metadata.has_offset, &output);
+        func(base, field_metadata.offset, field_metadata.tag,
+             field_metadata.has_offset, &output);
         array_output.ptr += output.ByteCount();
       } break;
       default:
@@ -728,8 +691,8 @@ void UnknownFieldSerializerLite(const uint8* ptr, uint32 offset, uint32 tag,
                                 uint32 has_offset,
                                 io::CodedOutputStream* output) {
   output->WriteString(
-      reinterpret_cast<const InternalMetadataWithArenaLite*>(ptr + offset)
-          ->unknown_fields());
+      reinterpret_cast<const InternalMetadata*>(ptr + offset)
+          ->unknown_fields<std::string>(&internal::GetEmptyString));
 }
 
 MessageLite* DuplicateIfNonNullInternal(MessageLite* message) {
@@ -740,6 +703,15 @@ MessageLite* DuplicateIfNonNullInternal(MessageLite* message) {
   } else {
     return NULL;
   }
+}
+
+void GenericSwap(MessageLite* m1, MessageLite* m2) {
+  std::unique_ptr<MessageLite> tmp(m1->New());
+  tmp->CheckTypeAndMergeFrom(*m1);
+  m1->Clear();
+  m1->CheckTypeAndMergeFrom(*m2);
+  m2->Clear();
+  m2->CheckTypeAndMergeFrom(*tmp);
 }
 
 // Returns a message owned by this Arena.  This may require Own()ing or
@@ -763,12 +735,22 @@ namespace {
 
 void InitSCC_DFS(SCCInfoBase* scc) {
   if (scc->visit_status.load(std::memory_order_relaxed) !=
-      SCCInfoBase::kUninitialized) return;
+      SCCInfoBase::kUninitialized)
+    return;
   scc->visit_status.store(SCCInfoBase::kRunning, std::memory_order_relaxed);
-  // Each base is followed by an array of pointers to deps
-  auto deps = reinterpret_cast<SCCInfoBase* const*>(scc + 1);
-  for (int i = 0; i < scc->num_deps; i++) {
-    if (deps[i]) InitSCC_DFS(deps[i]);
+  // Each base is followed by an array of void*, containing first pointers to
+  // SCCInfoBase and then pointers-to-pointers to SCCInfoBase.
+  auto deps = reinterpret_cast<void**>(scc + 1);
+  auto strong_deps = reinterpret_cast<SCCInfoBase* const*>(deps);
+  for (int i = 0; i < scc->num_deps; ++i) {
+    if (strong_deps[i]) InitSCC_DFS(strong_deps[i]);
+  }
+  auto implicit_weak_deps =
+      reinterpret_cast<SCCInfoBase** const*>(deps + scc->num_deps);
+  for (int i = 0; i < scc->num_implicit_weak_deps; ++i) {
+    if (*implicit_weak_deps[i]) {
+      InitSCC_DFS(*implicit_weak_deps[i]);
+    }
   }
   scc->init_func();
   // Mark done (note we use memory order release here), other threads could
@@ -783,8 +765,17 @@ void InitSCCImpl(SCCInfoBase* scc) {
   static WrappedMutex mu{GOOGLE_PROTOBUF_LINKER_INITIALIZED};
   // Either the default in case no initialization is running or the id of the
   // thread that is currently initializing.
+#ifndef GOOGLE_PROTOBUF_SUPPORT_WINDOWS_XP
   static std::atomic<std::thread::id> runner;
   auto me = std::this_thread::get_id();
+#else
+  // This is a lightweight replacement for std::thread::id. std::thread does not
+  // work on Windows XP SP2 with the latest VC++ libraries, because it utilizes
+  // the Concurrency Runtime that is only supported on Windows XP SP3 and above.
+  static std::atomic_llong runner(-1);
+  auto me = ::GetCurrentThreadId();
+#endif  // #ifndef GOOGLE_PROTOBUF_SUPPORT_WINDOWS_XP
+
   // This will only happen because the constructor will call InitSCC while
   // constructing the default instance.
   if (runner.load(std::memory_order_relaxed) == me) {
@@ -798,7 +789,13 @@ void InitSCCImpl(SCCInfoBase* scc) {
   mu.Lock();
   runner.store(me, std::memory_order_relaxed);
   InitSCC_DFS(scc);
+
+#ifndef GOOGLE_PROTOBUF_SUPPORT_WINDOWS_XP
   runner.store(std::thread::id{}, std::memory_order_relaxed);
+#else
+  runner.store(-1, std::memory_order_relaxed);
+#endif  // #ifndef GOOGLE_PROTOBUF_SUPPORT_WINDOWS_XP
+
   mu.Unlock();
 }
 

@@ -92,7 +92,7 @@ public final class Timestamps {
     SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ENGLISH);
     GregorianCalendar calendar = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
     // We use Proleptic Gregorian Calendar (i.e., Gregorian calendar extends
-    // backwards to year one) for timestamp formating.
+    // backwards to year one) for timestamp formatting.
     calendar.setGregorianChange(new Date(Long.MIN_VALUE));
     sdf.setCalendar(calendar);
     return sdf;
@@ -112,8 +112,9 @@ public final class Timestamps {
       };
 
   /**
-   * Returns a {@link Comparator} for {@link Timestamp}s which sorts in increasing chronological
-   * order. Nulls and invalid {@link Timestamp}s are not allowed (see {@link #isValid}).
+   * Returns a {@link Comparator} for {@link Timestamp Timestamps} which sorts in increasing
+   * chronological order. Nulls and invalid {@link Timestamp Timestamps} are not allowed (see
+   * {@link #isValid}).
    */
   public static Comparator<Timestamp> comparator() {
     return COMPARATOR;

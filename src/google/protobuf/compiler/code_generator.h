@@ -38,18 +38,21 @@
 #ifndef GOOGLE_PROTOBUF_COMPILER_CODE_GENERATOR_H__
 #define GOOGLE_PROTOBUF_COMPILER_CODE_GENERATOR_H__
 
-#include <google/protobuf/stubs/common.h>
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
+#include <google/protobuf/stubs/common.h>
 
 #include <google/protobuf/port_def.inc>
 
 namespace google {
 namespace protobuf {
 
-namespace io { class ZeroCopyOutputStream; }
+namespace io {
+class ZeroCopyOutputStream;
+}
 class FileDescriptor;
+class GeneratedCodeInfo;
 
 namespace compiler {
 class AccessInfoMap;
@@ -100,6 +103,16 @@ class PROTOC_EXPORT CodeGenerator {
                            GeneratorContext* generator_context,
                            std::string* error) const;
 
+  // Sync with plugin.proto.
+  enum Feature {
+    FEATURE_PROTO3_OPTIONAL = 1,
+  };
+
+  // Implement this to indicate what features this code generator supports.
+  // This should be a bitwise OR of features from the Features enum in
+  // plugin.proto.
+  virtual uint64_t GetSupportedFeatures() const { return 0; }
+
   // This is no longer used, but this class is part of the opensource protobuf
   // library, so it has to remain to keep vtables the same for the current
   // version of the library. When protobufs does a api breaking change, the
@@ -143,6 +156,15 @@ class PROTOC_EXPORT GeneratorContext {
   // WARNING:  This feature is currently EXPERIMENTAL and is subject to change.
   virtual io::ZeroCopyOutputStream* OpenForInsert(
       const std::string& filename, const std::string& insertion_point);
+
+  // Similar to OpenForInsert, but if `info` is non-empty, will open (or create)
+  // filename.pb.meta and insert info at the appropriate place with the
+  // necessary shifts. The default implementation ignores `info`.
+  //
+  // WARNING:  This feature will be REMOVED in the near future.
+  virtual io::ZeroCopyOutputStream* OpenForInsertWithGeneratedCodeInfo(
+      const std::string& filename, const std::string& insertion_point,
+      const google::protobuf::GeneratedCodeInfo& info);
 
   // Returns a vector of FileDescriptors for all the files being compiled
   // in this run.  Useful for languages, such as Go, that treat files

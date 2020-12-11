@@ -68,12 +68,12 @@ void PrintEnumVerifierLogic(io::Printer* printer,
                             const FieldDescriptor* descriptor,
                             const std::map<std::string, std::string>& variables,
                             const char* var_name,
-                            const char* terminating_string,
-                            bool enforce_lite);
+                            const char* terminating_string, bool enforce_lite);
 
 // Converts a name to camel-case. If cap_first_letter is true, capitalize the
 // first letter.
-std::string UnderscoresToCamelCase(const std::string& name, bool cap_first_letter);
+std::string UnderscoresToCamelCase(const std::string& name,
+                                   bool cap_first_letter);
 // Converts the field's name to camel-case, e.g. "foo_bar_baz" becomes
 // "fooBarBaz" or "FooBarBaz", respectively.
 std::string UnderscoresToCamelCase(const FieldDescriptor* field);
@@ -83,7 +83,10 @@ std::string UnderscoresToCapitalizedCamelCase(const FieldDescriptor* field);
 // of lower-casing the first letter of the name.)
 std::string UnderscoresToCamelCase(const MethodDescriptor* method);
 
-// Similar to UnderscoresToCamelCase, but guarentees that the result is a
+// Same as UnderscoresToCamelCase, but checks for reserved keywords
+std::string UnderscoresToCamelCaseCheckReserved(const FieldDescriptor* field);
+
+// Similar to UnderscoresToCamelCase, but guarantees that the result is a
 // complete Java identifier by adding a _ if needed.
 std::string CamelCaseFieldName(const FieldDescriptor* field);
 
@@ -107,14 +110,6 @@ std::string FileJavaPackage(const FileDescriptor* file, bool immutable);
 
 // Returns output directory for the given package name.
 std::string JavaPackageToDir(std::string package_name);
-
-// Converts the given fully-qualified name in the proto namespace to its
-// fully-qualified name in the Java namespace, given that it is in the given
-// file.
-// TODO(xiaofeng): this method is deprecated and should be removed in the
-// future.
-std::string ToJavaName(const std::string& full_name,
-                  const FileDescriptor* file);
 
 // TODO(xiaofeng): the following methods are kept for they are exposed
 // publicly in //net/proto2/compiler/java/public/names.h. They return
@@ -154,12 +149,17 @@ inline bool IsDescriptorProto(const Descriptor* descriptor) {
          descriptor->file()->name() == "google/protobuf/descriptor.proto";
 }
 
+// Returns the stored type string used by the experimental runtime for oneof
+// fields.
+std::string GetOneofStoredType(const FieldDescriptor* field);
+
 
 // Whether we should generate multiple java files for messages.
-inline bool MultipleJavaFiles(
-    const FileDescriptor* descriptor, bool immutable) {
+inline bool MultipleJavaFiles(const FileDescriptor* descriptor,
+                              bool immutable) {
   return descriptor->options().java_multiple_files();
 }
+
 
 // Returns true if `descriptor` will be written to its own .java file.
 // `immutable` should be set to true if we're generating for the immutable API.
@@ -179,7 +179,8 @@ inline bool IsOwnFile(const ServiceDescriptor* descriptor, bool immutable) {
 // annotation data for that descriptor. `suffix` is usually empty, but may
 // (e.g.) be "OrBuilder" for some generated interfaces.
 template <typename Descriptor>
-std::string AnnotationFileName(const Descriptor* descriptor, const std::string& suffix) {
+std::string AnnotationFileName(const Descriptor* descriptor,
+                               const std::string& suffix) {
   return descriptor->name() + suffix + ".java.pb.meta";
 }
 
@@ -187,15 +188,17 @@ template <typename Descriptor>
 void MaybePrintGeneratedAnnotation(Context* context, io::Printer* printer,
                                    Descriptor* descriptor, bool immutable,
                                    const std::string& suffix = "") {
-  if (context->options().annotate_code && IsOwnFile(descriptor, immutable)) {
+  if (IsOwnFile(descriptor, immutable)) {
     PrintGeneratedAnnotation(printer, '$',
-                             AnnotationFileName(descriptor, suffix));
+                             context->options().annotate_code
+                                 ? AnnotationFileName(descriptor, suffix)
+                                 : "");
   }
 }
 
 // Get the unqualified name that should be used for a field's field
 // number constant.
-std::string FieldConstantName(const FieldDescriptor *field);
+std::string FieldConstantName(const FieldDescriptor* field);
 
 // Returns the type of the FieldDescriptor.
 // This does nothing interesting for the open source release, but is used for
@@ -223,6 +226,7 @@ const char* PrimitiveTypeName(JavaType type);
 // types.
 const char* BoxedPrimitiveTypeName(JavaType type);
 
+
 // Get the name of the java enum constant representing this type. E.g.,
 // "INT32" for FieldDescriptor::TYPE_INT32. The enum constant's full
 // name is "com.google.protobuf.WireFormat.FieldType.INT32".
@@ -230,9 +234,9 @@ const char* FieldTypeName(const FieldDescriptor::Type field_type);
 
 class ClassNameResolver;
 std::string DefaultValue(const FieldDescriptor* field, bool immutable,
-                    ClassNameResolver* name_resolver);
+                         ClassNameResolver* name_resolver);
 inline std::string ImmutableDefaultValue(const FieldDescriptor* field,
-                                    ClassNameResolver* name_resolver) {
+                                         ClassNameResolver* name_resolver) {
   return DefaultValue(field, true, name_resolver);
 }
 bool IsDefaultValueJavaDefault(const FieldDescriptor* field);
@@ -241,24 +245,19 @@ bool IsByteStringWithCustomDefaultValue(const FieldDescriptor* field);
 // Does this message class have descriptor and reflection methods?
 inline bool HasDescriptorMethods(const Descriptor* descriptor,
                                  bool enforce_lite) {
-  return !enforce_lite &&
-         descriptor->file()->options().optimize_for() !=
-             FileOptions::LITE_RUNTIME;
+  return !enforce_lite;
 }
 inline bool HasDescriptorMethods(const EnumDescriptor* descriptor,
                                  bool enforce_lite) {
-  return !enforce_lite &&
-         descriptor->file()->options().optimize_for() !=
-             FileOptions::LITE_RUNTIME;
+  return !enforce_lite;
 }
 inline bool HasDescriptorMethods(const FileDescriptor* descriptor,
                                  bool enforce_lite) {
-  return !enforce_lite &&
-         descriptor->options().optimize_for() != FileOptions::LITE_RUNTIME;
+  return !enforce_lite;
 }
 
 // Should we generate generic services for this file?
-inline bool HasGenericServices(const FileDescriptor *file, bool enforce_lite) {
+inline bool HasGenericServices(const FileDescriptor* file, bool enforce_lite) {
   return file->service_count() > 0 &&
          HasDescriptorMethods(file, enforce_lite) &&
          file->options().java_generic_services();
@@ -356,9 +355,30 @@ inline bool HasPackedFields(const Descriptor* descriptor) {
 // them has a required field. Return true if a required field is found.
 bool HasRequiredFields(const Descriptor* descriptor);
 
-// Whether a .proto file supports field presence test for non-message types.
-inline bool SupportFieldPresence(const FileDescriptor* descriptor) {
-  return descriptor->syntax() != FileDescriptor::SYNTAX_PROTO3;
+inline bool IsProto2(const FileDescriptor* descriptor) {
+  return descriptor->syntax() == FileDescriptor::SYNTAX_PROTO2;
+}
+
+inline bool SupportFieldPresence(const FieldDescriptor* descriptor) {
+  // Note that while proto3 oneofs do conceptually support present, we return
+  // false for them because they do not offer a public hazzer. Therefore this
+  // method could be named HasHazzer().
+  return !descriptor->is_repeated() &&
+         (descriptor->message_type() || descriptor->has_optional_keyword() ||
+          IsProto2(descriptor->file()));
+}
+
+inline bool IsRealOneof(const FieldDescriptor* descriptor) {
+  return descriptor->containing_oneof() &&
+         !descriptor->containing_oneof()->is_synthetic();
+}
+
+inline bool HasHasbit(const FieldDescriptor* descriptor) {
+  // Note that currently message fields inside oneofs have hasbits. This is
+  // surprising, as the oneof case should avoid any need for a hasbit. But if
+  // you change this method to remove hasbits for oneofs, a few tests fail.
+  return !descriptor->is_repeated() &&
+         (descriptor->has_optional_keyword() || IsProto2(descriptor->file()));
 }
 
 // Whether generate classes expose public PARSER instances.
@@ -374,7 +394,11 @@ inline bool SupportUnknownEnumValue(const FileDescriptor* descriptor) {
   return descriptor->syntax() == FileDescriptor::SYNTAX_PROTO3;
 }
 
-// Check whether a mesasge has repeated fields.
+inline bool SupportUnknownEnumValue(const FieldDescriptor* field) {
+  return field->file()->syntax() == FileDescriptor::SYNTAX_PROTO3;
+}
+
+// Check whether a message has repeated fields.
 bool HasRepeatedFields(const Descriptor* descriptor);
 
 inline bool IsMapEntry(const Descriptor* descriptor) {
@@ -395,7 +419,7 @@ inline bool IsWrappersProtoFile(const FileDescriptor* descriptor) {
 
 inline bool CheckUtf8(const FieldDescriptor* descriptor) {
   return descriptor->file()->syntax() == FileDescriptor::SYNTAX_PROTO3 ||
-      descriptor->file()->options().java_string_check_utf8();
+         descriptor->file()->options().java_string_check_utf8();
 }
 
 inline std::string GeneratedCodeVersionSuffix() {

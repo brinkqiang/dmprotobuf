@@ -45,7 +45,6 @@ abstract interface.
 __author__ = 'gps@google.com (Gregory P. Smith)'
 
 
-import collections
 import copy
 import math
 import operator
@@ -54,6 +53,13 @@ import pydoc
 import six
 import sys
 import warnings
+
+try:
+  # Since python 3
+  import collections.abc as collections_abc
+except ImportError:
+  # Won't work after python 3.8
+  import collections as collections_abc
 
 try:
   import unittest2 as unittest  # PY26
@@ -77,6 +83,7 @@ from google.protobuf.internal import encoder
 from google.protobuf.internal import more_extensions_pb2
 from google.protobuf.internal import packed_field_test_pb2
 from google.protobuf.internal import test_util
+from google.protobuf.internal import test_proto3_optional_pb2
 from google.protobuf.internal import testing_refleaks
 from google.protobuf import message
 from google.protobuf.internal import _parameterized
@@ -100,13 +107,14 @@ def IsNegInf(val):
   return isinf(val) and (val < 0)
 
 
-BaseTestCase = testing_refleaks.BaseTestCase
+warnings.simplefilter('error', DeprecationWarning)
 
 
 @_parameterized.named_parameters(
     ('_proto2', unittest_pb2),
     ('_proto3', unittest_proto3_arena_pb2))
-class MessageTest(BaseTestCase):
+@testing_refleaks.TestCase
+class MessageTest(unittest.TestCase):
 
   def testBadUtf8String(self, message_module):
     if api_implementation.Type() != 'python':
@@ -160,6 +168,9 @@ class MessageTest(BaseTestCase):
         msg.FromString(end_tag)
       self.assertEqual('Unexpected end-group tag.', str(context.exception))
 
+    # Field number 0 is illegal.
+    self.assertRaises(message.DecodeError, msg.FromString, b'\3\4')
+
   def testDeterminismParameters(self, message_module):
     # This message is always deterministically serialized, even if determinism
     # is disabled, so we can use it to verify that all the determinism
@@ -202,6 +213,19 @@ class MessageTest(BaseTestCase):
     golden_message.ParseFromString(golden_data)
     pickled_message = pickle.dumps(golden_message)
 
+    unpickled_message = pickle.loads(pickled_message)
+    self.assertEqual(unpickled_message, golden_message)
+
+  def testPickleNestedMessage(self, message_module):
+    golden_message = message_module.TestPickleNestedMessage.NestedMessage(bb=1)
+    pickled_message = pickle.dumps(golden_message)
+    unpickled_message = pickle.loads(pickled_message)
+    self.assertEqual(unpickled_message, golden_message)
+
+  def testPickleNestedNestedMessage(self, message_module):
+    cls = message_module.TestPickleNestedMessage.NestedMessage
+    golden_message = cls.NestedNestedMessage(cc=1)
+    pickled_message = pickle.dumps(golden_message)
     unpickled_message = pickle.loads(pickled_message)
     self.assertEqual(unpickled_message, golden_message)
 
@@ -346,6 +370,27 @@ class MessageTest(BaseTestCase):
     message.ParseFromString(message.SerializeToString())
     self.assertTrue(message.optional_float == -kMostNegExponentOneSigBit)
 
+    # Max 4 bytes float value
+    max_float = float.fromhex('0x1.fffffep+127')
+    message.optional_float = max_float
+    self.assertAlmostEqual(message.optional_float, max_float)
+    serialized_data = message.SerializeToString()
+    message.ParseFromString(serialized_data)
+    self.assertAlmostEqual(message.optional_float, max_float)
+
+    # Test set double to float field.
+    message.optional_float = 3.4028235e+39
+    self.assertEqual(message.optional_float, float('inf'))
+    serialized_data = message.SerializeToString()
+    message.ParseFromString(serialized_data)
+    self.assertEqual(message.optional_float, float('inf'))
+
+    message.optional_float = -3.4028235e+39
+    self.assertEqual(message.optional_float, float('-inf'))
+
+    message.optional_float = 1.4028235e-39
+    self.assertAlmostEqual(message.optional_float, 1.4028235e-39)
+
   def testExtremeDoubleValues(self, message_module):
     message = message_module.TestAllTypes()
 
@@ -397,12 +442,19 @@ class MessageTest(BaseTestCase):
     self.assertEqual(str(message), 'optional_float: 2.0\n')
 
   def testHighPrecisionFloatPrinting(self, message_module):
-    message = message_module.TestAllTypes()
-    message.optional_double = 0.12345678912345678
+    msg = message_module.TestAllTypes()
+    msg.optional_float = 0.12345678912345678
+    old_float = msg.optional_float
+    msg.ParseFromString(msg.SerializeToString())
+    self.assertEqual(old_float, msg.optional_float)
+
+  def testHighPrecisionDoublePrinting(self, message_module):
+    msg = message_module.TestAllTypes()
+    msg.optional_double = 0.12345678912345678
     if sys.version_info >= (3,):
-      self.assertEqual(str(message), 'optional_double: 0.12345678912345678\n')
+      self.assertEqual(str(msg), 'optional_double: 0.12345678912345678\n')
     else:
-      self.assertEqual(str(message), 'optional_double: 0.123456789123\n')
+      self.assertEqual(str(msg), 'optional_double: 0.123456789123\n')
 
   def testUnknownFieldPrinting(self, message_module):
     populated = message_module.TestAllTypes()
@@ -410,6 +462,58 @@ class MessageTest(BaseTestCase):
     empty = message_module.TestEmptyMessage()
     empty.ParseFromString(populated.SerializeToString())
     self.assertEqual(str(empty), '')
+
+  def testAppendRepeatedCompositeField(self, message_module):
+    msg = message_module.TestAllTypes()
+    msg.repeated_nested_message.append(
+        message_module.TestAllTypes.NestedMessage(bb=1))
+    nested = message_module.TestAllTypes.NestedMessage(bb=2)
+    msg.repeated_nested_message.append(nested)
+    try:
+      msg.repeated_nested_message.append(1)
+    except TypeError:
+      pass
+    self.assertEqual(2, len(msg.repeated_nested_message))
+    self.assertEqual([1, 2],
+                     [m.bb for m in msg.repeated_nested_message])
+
+  def testInsertRepeatedCompositeField(self, message_module):
+    msg = message_module.TestAllTypes()
+    msg.repeated_nested_message.insert(
+        -1, message_module.TestAllTypes.NestedMessage(bb=1))
+    sub_msg = msg.repeated_nested_message[0]
+    msg.repeated_nested_message.insert(
+        0, message_module.TestAllTypes.NestedMessage(bb=2))
+    msg.repeated_nested_message.insert(
+        99, message_module.TestAllTypes.NestedMessage(bb=3))
+    msg.repeated_nested_message.insert(
+        -2, message_module.TestAllTypes.NestedMessage(bb=-1))
+    msg.repeated_nested_message.insert(
+        -1000, message_module.TestAllTypes.NestedMessage(bb=-1000))
+    try:
+      msg.repeated_nested_message.insert(1, 999)
+    except TypeError:
+      pass
+    self.assertEqual(5, len(msg.repeated_nested_message))
+    self.assertEqual([-1000, 2, -1, 1, 3],
+                     [m.bb for m in msg.repeated_nested_message])
+    self.assertEqual(str(msg),
+                     'repeated_nested_message {\n'
+                     '  bb: -1000\n'
+                     '}\n'
+                     'repeated_nested_message {\n'
+                     '  bb: 2\n'
+                     '}\n'
+                     'repeated_nested_message {\n'
+                     '  bb: -1\n'
+                     '}\n'
+                     'repeated_nested_message {\n'
+                     '  bb: 1\n'
+                     '}\n'
+                     'repeated_nested_message {\n'
+                     '  bb: 3\n'
+                     '}\n')
+    self.assertEqual(sub_msg.bb, 1)
 
   def testMergeFromRepeatedField(self, message_module):
     msg = message_module.TestAllTypes()
@@ -441,6 +545,30 @@ class MessageTest(BaseTestCase):
     except ValueError:
       pass
     self.assertEqual(len(msg.repeated_nested_message), 0)
+
+  def testRepeatedContains(self, message_module):
+    msg = message_module.TestAllTypes()
+    msg.repeated_int32.extend([1, 2, 3])
+    self.assertIn(2, msg.repeated_int32)
+    self.assertNotIn(0, msg.repeated_int32)
+
+    msg.repeated_nested_message.add(bb=1)
+    sub_msg1 = msg.repeated_nested_message[0]
+    sub_msg2 = message_module.TestAllTypes.NestedMessage(bb=2)
+    sub_msg3 = message_module.TestAllTypes.NestedMessage(bb=3)
+    msg.repeated_nested_message.append(sub_msg2)
+    msg.repeated_nested_message.insert(0, sub_msg3)
+    self.assertIn(sub_msg1, msg.repeated_nested_message)
+    self.assertIn(sub_msg2, msg.repeated_nested_message)
+    self.assertIn(sub_msg3, msg.repeated_nested_message)
+
+  def testRepeatedScalarIterable(self, message_module):
+    msg = message_module.TestAllTypes()
+    msg.repeated_int32.extend([1, 2, 3])
+    add = 0
+    for item in msg.repeated_int32:
+      add += item
+    self.assertEqual(add, 6)
 
   def testRepeatedNestedFieldIteration(self, message_module):
     msg = message_module.TestAllTypes()
@@ -656,9 +784,9 @@ class MessageTest(BaseTestCase):
 
   def testRepeatedFieldsAreSequences(self, message_module):
     m = message_module.TestAllTypes()
-    self.assertIsInstance(m.repeated_int32, collections.MutableSequence)
+    self.assertIsInstance(m.repeated_int32, collections_abc.MutableSequence)
     self.assertIsInstance(m.repeated_nested_message,
-                          collections.MutableSequence)
+                          collections_abc.MutableSequence)
 
   def testRepeatedFieldsNotHashable(self, message_module):
     m = message_module.TestAllTypes()
@@ -676,28 +804,31 @@ class MessageTest(BaseTestCase):
     m1 = message_module.TestAllTypes()
     m2 = message_module.TestAllTypes()
     # Cpp extension will lazily create a sub message which is immutable.
-    self.assertEqual(0, m1.optional_nested_message.bb)
+    nested = m1.optional_nested_message
+    self.assertEqual(0, nested.bb)
     m2.optional_nested_message.bb = 1
     # Make sure cmessage pointing to a mutable message after merge instead of
     # the lazily created message.
     m1.MergeFrom(m2)
-    self.assertEqual(1, m1.optional_nested_message.bb)
+    self.assertEqual(1, nested.bb)
 
     # Test more nested sub message.
     msg1 = message_module.NestedTestAllTypes()
     msg2 = message_module.NestedTestAllTypes()
-    self.assertEqual(0, msg1.child.payload.optional_nested_message.bb)
+    nested = msg1.child.payload.optional_nested_message
+    self.assertEqual(0, nested.bb)
     msg2.child.payload.optional_nested_message.bb = 1
     msg1.MergeFrom(msg2)
-    self.assertEqual(1, msg1.child.payload.optional_nested_message.bb)
+    self.assertEqual(1, nested.bb)
 
     # Test repeated field.
     self.assertEqual(msg1.payload.repeated_nested_message,
                      msg1.payload.repeated_nested_message)
-    msg2.payload.repeated_nested_message.add().bb = 1
+    nested = msg2.payload.repeated_nested_message.add()
+    nested.bb = 1
     msg1.MergeFrom(msg2)
     self.assertEqual(1, len(msg1.payload.repeated_nested_message))
-    self.assertEqual(1, msg1.payload.repeated_nested_message[0].bb)
+    self.assertEqual(1, nested.bb)
 
   def testMergeFromString(self, message_module):
     m1 = message_module.TestAllTypes()
@@ -765,11 +896,13 @@ class MessageTest(BaseTestCase):
   def testOneofDefaultValues(self, message_module):
     m = message_module.TestAllTypes()
     self.assertIs(None, m.WhichOneof('oneof_field'))
+    self.assertFalse(m.HasField('oneof_field'))
     self.assertFalse(m.HasField('oneof_uint32'))
 
     # Oneof is set even when setting it to a default value.
     m.oneof_uint32 = 0
     self.assertEqual('oneof_uint32', m.WhichOneof('oneof_field'))
+    self.assertTrue(m.HasField('oneof_field'))
     self.assertTrue(m.HasField('oneof_uint32'))
     self.assertFalse(m.HasField('oneof_string'))
 
@@ -926,7 +1059,7 @@ class MessageTest(BaseTestCase):
     self.assertIsInstance(m.optional_string, six.text_type)
 
   def testLongValuedSlice(self, message_module):
-    """It should be possible to use long-valued indicies in slices
+    """It should be possible to use long-valued indices in slices.
 
     This didn't used to work in the v2 C++ implementation.
     """
@@ -1173,9 +1306,31 @@ class MessageTest(BaseTestCase):
     with self.assertRaises(AttributeError):
       m.repeated_int32 = []
 
+  def testReturningType(self, message_module):
+    m = message_module.TestAllTypes()
+    self.assertEqual(float, type(m.optional_float))
+    self.assertEqual(float, type(m.optional_double))
+    self.assertEqual(bool, type(m.optional_bool))
+    m.optional_float = 1
+    m.optional_double = 1
+    m.optional_bool = 1
+    m.repeated_float.append(1)
+    m.repeated_double.append(1)
+    m.repeated_bool.append(1)
+    m.ParseFromString(m.SerializeToString())
+    self.assertEqual(float, type(m.optional_float))
+    self.assertEqual(float, type(m.optional_double))
+    self.assertEqual('1.0', str(m.optional_double))
+    self.assertEqual(bool, type(m.optional_bool))
+    self.assertEqual(float, type(m.repeated_float[0]))
+    self.assertEqual(float, type(m.repeated_double[0]))
+    self.assertEqual(bool, type(m.repeated_bool[0]))
+    self.assertEqual(True, m.repeated_bool[0])
+
 
 # Class to test proto2-only features (required, extensions, etc.)
-class Proto2Test(BaseTestCase):
+@testing_refleaks.TestCase
+class Proto2Test(unittest.TestCase):
 
   def testFieldPresence(self):
     message = unittest_pb2.TestAllTypes()
@@ -1449,7 +1604,8 @@ class Proto2Test(BaseTestCase):
 
 
 # Class to test proto3-only features/behavior (updated field presence & enums)
-class Proto3Test(BaseTestCase):
+@testing_refleaks.TestCase
+class Proto3Test(unittest.TestCase):
 
   # Utility method for comparing equality with a map.
   def assertMapIterEquals(self, map_iter, dict_value):
@@ -1518,6 +1674,70 @@ class Proto3Test(BaseTestCase):
     self.assertEqual('', message.optional_string)
     self.assertEqual(False, message.optional_bool)
     self.assertEqual(0, message.optional_nested_message.bb)
+
+  def testProto3ParserDropDefaultScalar(self):
+    message_proto2 = unittest_pb2.TestAllTypes()
+    message_proto2.optional_int32 = 0
+    message_proto2.optional_string = ''
+    message_proto2.optional_bytes = b''
+    self.assertEqual(len(message_proto2.ListFields()), 3)
+
+    message_proto3 = unittest_proto3_arena_pb2.TestAllTypes()
+    message_proto3.ParseFromString(message_proto2.SerializeToString())
+    self.assertEqual(len(message_proto3.ListFields()), 0)
+
+  def testProto3Optional(self):
+    msg = test_proto3_optional_pb2.TestProto3Optional()
+    self.assertFalse(msg.HasField('optional_int32'))
+    self.assertFalse(msg.HasField('optional_float'))
+    self.assertFalse(msg.HasField('optional_string'))
+    self.assertFalse(msg.HasField('optional_nested_message'))
+    self.assertFalse(msg.optional_nested_message.HasField('bb'))
+
+    # Set fields.
+    msg.optional_int32 = 1
+    msg.optional_float = 1.0
+    msg.optional_string = '123'
+    msg.optional_nested_message.bb = 1
+    self.assertTrue(msg.HasField('optional_int32'))
+    self.assertTrue(msg.HasField('optional_float'))
+    self.assertTrue(msg.HasField('optional_string'))
+    self.assertTrue(msg.HasField('optional_nested_message'))
+    self.assertTrue(msg.optional_nested_message.HasField('bb'))
+    # Set to default value does not clear the fields
+    msg.optional_int32 = 0
+    msg.optional_float = 0.0
+    msg.optional_string = ''
+    msg.optional_nested_message.bb = 0
+    self.assertTrue(msg.HasField('optional_int32'))
+    self.assertTrue(msg.HasField('optional_float'))
+    self.assertTrue(msg.HasField('optional_string'))
+    self.assertTrue(msg.HasField('optional_nested_message'))
+    self.assertTrue(msg.optional_nested_message.HasField('bb'))
+
+    # Test serialize
+    msg2 = test_proto3_optional_pb2.TestProto3Optional()
+    msg2.ParseFromString(msg.SerializeToString())
+    self.assertTrue(msg2.HasField('optional_int32'))
+    self.assertTrue(msg2.HasField('optional_float'))
+    self.assertTrue(msg2.HasField('optional_string'))
+    self.assertTrue(msg2.HasField('optional_nested_message'))
+    self.assertTrue(msg2.optional_nested_message.HasField('bb'))
+
+    self.assertEqual(msg.WhichOneof('_optional_int32'), 'optional_int32')
+
+    # Clear these fields.
+    msg.ClearField('optional_int32')
+    msg.ClearField('optional_float')
+    msg.ClearField('optional_string')
+    msg.ClearField('optional_nested_message')
+    self.assertFalse(msg.HasField('optional_int32'))
+    self.assertFalse(msg.HasField('optional_float'))
+    self.assertFalse(msg.HasField('optional_string'))
+    self.assertFalse(msg.HasField('optional_nested_message'))
+    self.assertFalse(msg.optional_nested_message.HasField('bb'))
+
+    self.assertEqual(msg.WhichOneof('_optional_int32'), None)
 
   def testAssignUnknownEnum(self):
     """Assigning an unknown enum value is allowed and preserves the value."""
@@ -1598,6 +1818,7 @@ class Proto3Test(BaseTestCase):
 
     self.assertIsNone(msg.map_int32_int32.get(5))
     self.assertEqual(10, msg.map_int32_int32.get(5, 10))
+    self.assertEqual(10, msg.map_int32_int32.get(key=5, default=10))
     self.assertIsNone(msg.map_int32_int32.get(5))
 
     msg.map_int32_int32[5] = 15
@@ -1608,6 +1829,7 @@ class Proto3Test(BaseTestCase):
 
     self.assertIsNone(msg.map_int32_foreign_message.get(5))
     self.assertEqual(10, msg.map_int32_foreign_message.get(5, 10))
+    self.assertEqual(10, msg.map_int32_foreign_message.get(key=5, default=10))
 
     submsg = msg.map_int32_foreign_message[5]
     self.assertIs(submsg, msg.map_int32_foreign_message.get(5))
@@ -1869,6 +2091,27 @@ class Proto3Test(BaseTestCase):
     m1.MergeFrom(m2)
     self.assertEqual(10, m2.map_int32_foreign_message[123].c)
 
+    # Test merge maps within different message types.
+    m1 = map_unittest_pb2.TestMap()
+    m2 = map_unittest_pb2.TestMessageMap()
+    m2.map_int32_message[123].optional_int32 = 10
+    m1.map_int32_all_types.MergeFrom(m2.map_int32_message)
+    self.assertEqual(10, m1.map_int32_all_types[123].optional_int32)
+
+    # Test overwrite message value map
+    msg = map_unittest_pb2.TestMap()
+    msg.map_int32_foreign_message[222].c = 123
+    msg2 = map_unittest_pb2.TestMap()
+    msg2.map_int32_foreign_message[222].d = 20
+    msg.MergeFromString(msg2.SerializeToString())
+    self.assertEqual(msg.map_int32_foreign_message[222].d, 20)
+    self.assertNotEqual(msg.map_int32_foreign_message[222].c, 123)
+
+    # Merge a dict to map field is not accepted
+    with self.assertRaises(AttributeError):
+      m1.map_int32_all_types.MergeFrom(
+          {1: unittest_proto3_arena_pb2.TestAllTypes()})
+
   def testMergeFromBadType(self):
     msg = map_unittest_pb2.TestMap()
     with self.assertRaisesRegexp(
@@ -2117,6 +2360,24 @@ class Proto3Test(BaseTestCase):
         map_int32_foreign_message={3: unittest_pb2.ForeignMessage(c=5)})
     self.assertEqual(5, msg.map_int32_foreign_message[3].c)
 
+  def testMapScalarFieldConstruction(self):
+    msg1 = map_unittest_pb2.TestMap()
+    msg1.map_int32_int32[1] = 42
+    msg2 = map_unittest_pb2.TestMap(map_int32_int32=msg1.map_int32_int32)
+    self.assertEqual(42, msg2.map_int32_int32[1])
+
+  def testMapMessageFieldConstruction(self):
+    msg1 = map_unittest_pb2.TestMap()
+    msg1.map_string_foreign_message['test'].c = 42
+    msg2 = map_unittest_pb2.TestMap(
+      map_string_foreign_message=msg1.map_string_foreign_message)
+    self.assertEqual(42, msg2.map_string_foreign_message['test'].c)
+
+  def testMapFieldRaisesCorrectError(self):
+    # Should raise a TypeError when given a non-iterable.
+    with self.assertRaises(TypeError):
+      map_unittest_pb2.TestMap(map_string_foreign_message=1)
+
   def testMapValidAfterFieldCleared(self):
     # Map needs to work even if field is cleared.
     # For the C++ implementation this tests the correctness of
@@ -2203,11 +2464,11 @@ class Proto3Test(BaseTestCase):
 
   def testMapsAreMapping(self):
     msg = map_unittest_pb2.TestMap()
-    self.assertIsInstance(msg.map_int32_int32, collections.Mapping)
-    self.assertIsInstance(msg.map_int32_int32, collections.MutableMapping)
-    self.assertIsInstance(msg.map_int32_foreign_message, collections.Mapping)
+    self.assertIsInstance(msg.map_int32_int32, collections_abc.Mapping)
+    self.assertIsInstance(msg.map_int32_int32, collections_abc.MutableMapping)
+    self.assertIsInstance(msg.map_int32_foreign_message, collections_abc.Mapping)
     self.assertIsInstance(msg.map_int32_foreign_message,
-                          collections.MutableMapping)
+                          collections_abc.MutableMapping)
 
   def testMapsCompare(self):
     msg = map_unittest_pb2.TestMap()
@@ -2302,7 +2563,8 @@ class Proto3Test(BaseTestCase):
         optional_string=u'\ud801\ud801')
 
 
-class ValidTypeNamesTest(BaseTestCase):
+@testing_refleaks.TestCase
+class ValidTypeNamesTest(unittest.TestCase):
 
   def assertImportFromName(self, msg, base_name):
     # Parse <type 'module.class_name'> to extra 'some.name' as a string.
@@ -2323,7 +2585,8 @@ class ValidTypeNamesTest(BaseTestCase):
     self.assertImportFromName(pb.repeated_int32, 'Scalar')
     self.assertImportFromName(pb.repeated_nested_message, 'Composite')
 
-class PackedFieldTest(BaseTestCase):
+@testing_refleaks.TestCase
+class PackedFieldTest(unittest.TestCase):
 
   def setMessage(self, message):
     message.repeated_int32.append(1)
@@ -2383,7 +2646,8 @@ class PackedFieldTest(BaseTestCase):
 @unittest.skipIf(api_implementation.Type() != 'cpp' or
                  sys.version_info < (2, 7),
                  'explicit tests of the C++ implementation for PY27 and above')
-class OversizeProtosTest(BaseTestCase):
+@testing_refleaks.TestCase
+class OversizeProtosTest(unittest.TestCase):
 
   @classmethod
   def setUpClass(cls):

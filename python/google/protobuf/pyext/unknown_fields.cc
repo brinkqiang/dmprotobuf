@@ -137,9 +137,12 @@ static void Dealloc(PyObject* pself) {
   if (PyObject_TypeCheck(self->parent, &PyUnknownFields_Type)) {
     reinterpret_cast<PyUnknownFields*>(
         self->parent)->sub_unknown_fields.erase(self);
+  } else {
+    reinterpret_cast<CMessage*>(self->parent)->unknown_field_set = nullptr;
   }
   Py_CLEAR(self->parent);
   self->~PyUnknownFields();
+  Py_TYPE(pself)->tp_free(pself);
 }
 
 static PySequenceMethods SqMethods = {
@@ -244,7 +247,7 @@ static PyObject* GetWireType(PyUnknownFieldRef* self, void *closure) {
     return NULL;
   }
 
-  // Assign a default value to suppress may-unintialized warnings (errors
+  // Assign a default value to suppress may-uninitialized warnings (errors
   // when built in some places).
   WireFormatLite::WireType wire_type = WireFormatLite::WIRETYPE_VARINT;
   switch (unknown_field->type()) {

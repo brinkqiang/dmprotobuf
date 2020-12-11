@@ -37,11 +37,23 @@ else()
   set(CMAKE_CXX_EXTENSIONS OFF)
 endif()
 
+# The Intel compiler isn't able to deal with noinline member functions of
+# template classes defined in headers.  As such it spams the output with
+#   warning #2196: routine is both "inline" and "noinline"
+# This silences that warning.
+if (CMAKE_CXX_COMPILER_ID MATCHES Intel)
+  string(APPEND CMAKE_CXX_FLAGS " -diag-disable=2196")
+endif()
+
 # Options
+if(WITH_PROTOC)
+  set(protobuf_PROTOC_EXE ${WITH_PROTOC} CACHE FILEPATH "Protocol Buffer Compiler executable" FORCE)
+endif()
 option(protobuf_BUILD_TESTS "Build tests" OFF)
 option(protobuf_BUILD_CONFORMANCE "Build conformance tests" OFF)
 option(protobuf_BUILD_EXAMPLES "Build examples" OFF)
 option(protobuf_BUILD_PROTOC_BINARIES "Build libprotoc and protoc compiler" ON)
+option(protobuf_BUILD_LIBPROTOC "Build libprotoc" OFF)
 if (BUILD_SHARED_LIBS)
   set(protobuf_BUILD_SHARED_LIBS_DEFAULT ON)
 else (BUILD_SHARED_LIBS)
@@ -59,6 +71,10 @@ mark_as_advanced(protobuf_DEBUG_POSTFIX)
 # User options
 include(protobuf-options.cmake)
 
+# Overrides for option dependencies
+if (protobuf_BUILD_PROTOC_BINARIES OR protobuf_BUILD_TESTS)
+  set(protobuf_BUILD_LIBPROTOC ON)
+endif ()
 # Path to main configure script
 set(protobuf_CONFIGURE_SCRIPT "../configure.ac")
 
@@ -141,6 +157,25 @@ if (HAVE_ZLIB)
   add_definitions(-DHAVE_ZLIB)
 endif (HAVE_ZLIB)
 
+# We need to link with libatomic on systems that do not have builtin atomics, or
+# don't have builtin support for 8 byte atomics
+set(protobuf_LINK_LIBATOMIC false)
+if (NOT MSVC)
+  include(CheckCXXSourceCompiles)
+  set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+  set(CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS} -std=c++11)
+  check_cxx_source_compiles("
+    #include <atomic>
+    int main() {
+      return std::atomic<int64_t>{};
+    }
+  " protobuf_HAVE_BUILTIN_ATOMICS)
+  if (NOT protobuf_HAVE_BUILTIN_ATOMICS)
+    set(protobuf_LINK_LIBATOMIC true)
+  endif (NOT protobuf_HAVE_BUILTIN_ATOMICS)
+  set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQUIRED_FLAGS})
+endif (NOT MSVC)
+
 if (protobuf_BUILD_SHARED_LIBS)
   set(protobuf_SHARED_OR_STATIC "SHARED")
 else (protobuf_BUILD_SHARED_LIBS)
@@ -150,15 +185,15 @@ else (protobuf_BUILD_SHARED_LIBS)
   # https://msdn.microsoft.com/en-us/library/2kzt1wy3.aspx
   # This is achieved by replacing msvc option /MD with /MT and /MDd with /MTd
   # http://www.cmake.org/Wiki/CMake_FAQ#How_can_I_build_my_MSVC_application_with_a_static_runtime.3F
-  # if (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
-  #   foreach(flag_var
-  #       CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
-  #       CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-  #     if(${flag_var} MATCHES "/MD")
-  #       string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
-  #     endif(${flag_var} MATCHES "/MD")
-  #   endforeach(flag_var)
-  # endif (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
+  if (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
+    foreach(flag_var
+        CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+        CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+      if(${flag_var} MATCHES "/MD")
+        string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+      endif(${flag_var} MATCHES "/MD")
+    endforeach(flag_var)
+  endif (MSVC AND protobuf_MSVC_STATIC_RUNTIME)
 endif (protobuf_BUILD_SHARED_LIBS)
 
 if (MSVC)
@@ -224,10 +259,28 @@ endif (protobuf_UNICODE)
 
 include(libprotobuf-lite.cmake)
 include(libprotobuf.cmake)
-if (protobuf_BUILD_PROTOC_BINARIES)
+if (protobuf_BUILD_LIBPROTOC)
   include(libprotoc.cmake)
+endif (protobuf_BUILD_LIBPROTOC)
+if (protobuf_BUILD_PROTOC_BINARIES)
   include(protoc.cmake)
+  if (NOT DEFINED protobuf_PROTOC_EXE)
+    set(protobuf_PROTOC_EXE protoc)
+  endif (NOT DEFINED protobuf_PROTOC_EXE)
 endif (protobuf_BUILD_PROTOC_BINARIES)
+
+# Ensure we have a protoc executable if we need one
+if (protobuf_BUILD_TESTS OR protobuf_BUILD_CONFORMANCE OR protobuf_BUILD_EXAMPLES)
+  if (NOT DEFINED protobuf_PROTOC_EXE)
+    find_program(protobuf_PROTOC_EXE protoc)
+    if (NOT protobuf_PROTOC_EXE)
+      message(FATAL "Build requires 'protoc' but binary not found and not building protoc.")
+    endif ()
+  endif ()
+  if(protobuf_VERBOSE)
+    message(STATUS "Using protoc : ${protobuf_PROTOC_EXE}")
+  endif(protobuf_VERBOSE)
+endif ()
 
 if (protobuf_BUILD_TESTS)
   include(tests.cmake)
@@ -244,5 +297,5 @@ if (protobuf_BUILD_EXAMPLES)
 endif (protobuf_BUILD_EXAMPLES)
 
 if(protobuf_VERBOSE)
-    message(STATUS "Protocol Buffers Configuring done")
-endif()
+  message(STATUS "Protocol Buffers Configuring done")
+endif(protobuf_VERBOSE)

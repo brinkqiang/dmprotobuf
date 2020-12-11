@@ -35,8 +35,8 @@
 #ifndef GOOGLE_PROTOBUF_COMPILER_JAVA_MESSAGE_BUILDER_H__
 #define GOOGLE_PROTOBUF_COMPILER_JAVA_MESSAGE_BUILDER_H__
 
-#include <string>
 #include <map>
+#include <string>
 #include <google/protobuf/compiler/java/java_field.h>
 
 namespace google {
@@ -76,6 +76,7 @@ class MessageBuilderGenerator {
   Context* context_;
   ClassNameResolver* name_resolver_;
   FieldGeneratorMap<ImmutableFieldGenerator> field_generators_;
+  std::set<const OneofDescriptor*> oneofs_;
 
   GOOGLE_DISALLOW_EVIL_CONSTRUCTORS(MessageBuilderGenerator);
 };

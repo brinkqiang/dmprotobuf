@@ -36,23 +36,17 @@
 #include <string>
 
 #include <google/protobuf/stubs/common.h>
+#include <google/protobuf/type.pb.h>
 #include <google/protobuf/stubs/status.h>
 
 #include <google/protobuf/port_def.inc>
 
 namespace google {
 namespace protobuf {
-class Type;
-class Enum;
-}  // namespace protobuf
-}  // namespace google
-
-namespace google {
-namespace protobuf {
 class DescriptorPool;
 namespace util {
 
-// Abstract interface for a type resovler.
+// Abstract interface for a type resolver.
 //
 // Implementations of this interface must be thread-safe.
 class PROTOBUF_EXPORT TypeResolver {

@@ -33,7 +33,7 @@
 
 #include <google/protobuf/testing/googletest.h>
 #include <google/protobuf/testing/file.h>
-#include <google/protobuf/stubs/io_win32.h>
+#include <google/protobuf/io/io_win32.h>
 #include <google/protobuf/stubs/strutil.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -55,11 +55,11 @@ namespace protobuf {
 #ifdef _WIN32
 // DO NOT include <io.h>, instead create functions in io_win32.{h,cc} and import
 // them like we do below.
-using google::protobuf::internal::win32::close;
-using google::protobuf::internal::win32::dup2;
-using google::protobuf::internal::win32::dup;
-using google::protobuf::internal::win32::mkdir;
-using google::protobuf::internal::win32::open;
+using google::protobuf::io::win32::close;
+using google::protobuf::io::win32::dup2;
+using google::protobuf::io::win32::dup;
+using google::protobuf::io::win32::mkdir;
+using google::protobuf::io::win32::open;
 #endif
 
 #ifndef O_BINARY
@@ -70,7 +70,7 @@ using google::protobuf::internal::win32::open;
 #endif
 #endif
 
-string TestSourceDir() {
+std::string TestSourceDir() {
 #ifndef GOOGLE_THIRD_PARTY_PROTOBUF
 #ifdef GOOGLE_PROTOBUF_TEST_SOURCE_PATH
   return GOOGLE_PROTOBUF_TEST_SOURCE_PATH;
@@ -84,9 +84,13 @@ string TestSourceDir() {
 #endif  // _MSC_VER
 
   // Look for the "src" directory.
-  string prefix = ".";
+  std::string prefix = ".";
 
-  while (!File::Exists(prefix + "/src/google/protobuf")) {
+  // Keep looking further up the directory tree until we find
+  // src/.../descriptor.cc. It is important to look for a particular file,
+  // keeping in mind that with Bazel builds the directory structure under
+  // bazel-bin/ looks similar to the main directory tree in the Git repo.
+  while (!File::Exists(prefix + "/src/google/protobuf/descriptor.cc")) {
     if (!File::Exists(prefix)) {
       GOOGLE_LOG(FATAL)
         << "Could not find protobuf source code.  Please run tests from "
@@ -103,19 +107,22 @@ string TestSourceDir() {
 
 namespace {
 
-string GetTemporaryDirectoryName() {
+std::string GetTemporaryDirectoryName() {
   // Tests run under Bazel "should not" use /tmp. Bazel sets this environment
   // variable for tests to use instead.
   char *from_environment = getenv("TEST_TMPDIR");
   if (from_environment != NULL && from_environment[0] != '\0') {
-    return string(from_environment) + "/protobuf_tmpdir";
+    return std::string(from_environment) + "/protobuf_tmpdir";
   }
 
   // tmpnam() is generally not considered safe but we're only using it for
   // testing.  We cannot use tmpfile() or mkstemp() since we're creating a
   // directory.
   char b[L_tmpnam + 1];     // HPUX multithread return 0 if s is 0
-  string result = tmpnam(b);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  std::string result = tmpnam(b);
+#pragma GCC diagnostic pop
 #ifdef _WIN32
   // Avoid a trailing dot by changing it to an underscore. On Win32 the names of
   // files and directories can, but should not, end with dot.
@@ -159,7 +166,7 @@ class TempDirDeleter {
     }
   }
 
-  string GetTempDir() {
+  std::string GetTempDir() {
     if (name_.empty()) {
       name_ = GetTemporaryDirectoryName();
       GOOGLE_CHECK(mkdir(name_.c_str(), 0777) == 0) << strerror(errno);
@@ -172,21 +179,19 @@ class TempDirDeleter {
   }
 
  private:
-  string name_;
+  std::string name_;
 };
 
 TempDirDeleter temp_dir_deleter_;
 
 }  // namespace
 
-string TestTempDir() {
-  return temp_dir_deleter_.GetTempDir();
-}
+std::string TestTempDir() { return temp_dir_deleter_.GetTempDir(); }
 
 // TODO(kenton):  Share duplicated code below.  Too busy/lazy for now.
 
-static string stdout_capture_filename_;
-static string stderr_capture_filename_;
+static std::string stdout_capture_filename_;
+static std::string stderr_capture_filename_;
 static int original_stdout_ = -1;
 static int original_stderr_ = -1;
 
@@ -220,14 +225,14 @@ void CaptureTestStderr() {
   close(fd);
 }
 
-string GetCapturedTestStdout() {
+std::string GetCapturedTestStdout() {
   GOOGLE_CHECK_NE(original_stdout_, -1) << "Not capturing.";
 
   close(1);
   dup2(original_stdout_, 1);
   original_stdout_ = -1;
 
-  string result;
+  std::string result;
   File::ReadFileToStringOrDie(stdout_capture_filename_, &result);
 
   remove(stdout_capture_filename_.c_str());
@@ -235,14 +240,14 @@ string GetCapturedTestStdout() {
   return result;
 }
 
-string GetCapturedTestStderr() {
+std::string GetCapturedTestStderr() {
   GOOGLE_CHECK_NE(original_stderr_, -1) << "Not capturing.";
 
   close(2);
   dup2(original_stderr_, 2);
   original_stderr_ = -1;
 
-  string result;
+  std::string result;
   File::ReadFileToStringOrDie(stderr_capture_filename_, &result);
 
   remove(stderr_capture_filename_.c_str());
@@ -263,14 +268,14 @@ ScopedMemoryLog::~ScopedMemoryLog() {
   active_log_ = NULL;
 }
 
-const std::vector<string>& ScopedMemoryLog::GetMessages(LogLevel level) {
+const std::vector<std::string>& ScopedMemoryLog::GetMessages(LogLevel level) {
   GOOGLE_CHECK(level == ERROR ||
                level == WARNING);
   return messages_[level];
 }
 
-void ScopedMemoryLog::HandleLog(LogLevel level, const char* filename,
-                                int line, const string& message) {
+void ScopedMemoryLog::HandleLog(LogLevel level, const char* filename, int line,
+                                const std::string& message) {
   GOOGLE_CHECK(active_log_ != NULL);
   if (level == ERROR || level == WARNING) {
     active_log_->messages_[level].push_back(message);

@@ -43,20 +43,20 @@
 
 namespace google {
 namespace protobuf {
-class FileDescriptor;          // descriptor.h
+class FileDescriptor;  // descriptor.h
 namespace io {
-  class Printer;               // printer.h
+class Printer;  // printer.h
 }
 namespace compiler {
-  class GeneratorContext;      // code_generator.h
-  namespace java {
-    class Context;             // context.h
-    class MessageGenerator;    // message.h
-    class GeneratorFactory;    // generator_factory.h
-    class ExtensionGenerator;  // extension.h
-    class ClassNameResolver;   // name_resolver.h
-  }
-}
+class GeneratorContext;  // code_generator.h
+namespace java {
+class Context;             // context.h
+class MessageGenerator;    // message.h
+class GeneratorFactory;    // generator_factory.h
+class ExtensionGenerator;  // extension.h
+class ClassNameResolver;   // name_resolver.h
+}  // namespace java
+}  // namespace compiler
 }  // namespace protobuf
 }  // namespace google
 
@@ -77,6 +77,7 @@ class FileGenerator {
   bool Validate(std::string* error);
 
   void Generate(io::Printer* printer);
+
 
   // If we aren't putting everything into one file, this will write all the
   // files other than the outer file (i.e. one for each message, enum, and

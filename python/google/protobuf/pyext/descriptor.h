@@ -41,6 +41,9 @@ namespace google {
 namespace protobuf {
 namespace python {
 
+// Should match the type of ConstStringParam.
+using StringParam = std::string;
+
 extern PyTypeObject PyMessageDescriptor_Type;
 extern PyTypeObject PyFieldDescriptor_Type;
 extern PyTypeObject PyEnumDescriptor_Type;
@@ -81,7 +84,6 @@ const FieldDescriptor* PyFieldDescriptor_AsDescriptor(PyObject* obj);
 const EnumDescriptor* PyEnumDescriptor_AsDescriptor(PyObject* obj);
 const FileDescriptor* PyFileDescriptor_AsDescriptor(PyObject* obj);
 const ServiceDescriptor* PyServiceDescriptor_AsDescriptor(PyObject* obj);
-const MethodDescriptor* PyMethodDescriptor_AsDescriptor(PyObject* obj);
 
 // Returns the raw C++ pointer.
 const void* PyDescriptor_AsVoidPtr(PyObject* obj);
