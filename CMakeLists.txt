@@ -35,7 +35,7 @@ endif()
 
 # Options
 option(protobuf_INSTALL "Install protobuf binaries and files" ON)
-option(protobuf_BUILD_TESTS "Build tests" ON)
+option(protobuf_BUILD_TESTS "Build tests" OFF)
 option(protobuf_BUILD_CONFORMANCE "Build conformance tests" OFF)
 option(protobuf_BUILD_EXAMPLES "Build examples" OFF)
 option(protobuf_BUILD_PROTOBUF_BINARIES "Build protobuf libraries and protoc compiler" ON)
@@ -294,6 +294,7 @@ include_directories(
   ${protobuf_SOURCE_DIR}/src)
 
 set(protobuf_ABSL_PROVIDER "module" CACHE STRING "Provider of absl library")
+
 set_property(CACHE protobuf_ABSL_PROVIDER PROPERTY STRINGS "module" "package")
 
 set(protobuf_JSONCPP_PROVIDER "module" CACHE STRING "Provider of jsoncpp library")
