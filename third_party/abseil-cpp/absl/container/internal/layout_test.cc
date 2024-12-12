@@ -19,12 +19,8 @@
 #include <stddef.h>
 
 #include <cstdint>
-#include <cstring>
-#include <initializer_list>
 #include <memory>
-#include <ostream>
-#include <string>
-#include <tuple>
+#include <sstream>
 #include <type_traits>
 
 #include "gmock/gmock.h"
@@ -32,7 +28,6 @@
 #include "absl/base/config.h"
 #include "absl/log/check.h"
 #include "absl/types/span.h"
-#include "absl/utility/utility.h"
 
 namespace absl {
 ABSL_NAMESPACE_BEGIN

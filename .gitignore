@@ -188,7 +188,8 @@ cmake/cmake-build-debug/
 # Common build subdirectories.
 .build/
 _build/
-
+build/
+bin/
 # Visual Studio 2017
 .vs
 

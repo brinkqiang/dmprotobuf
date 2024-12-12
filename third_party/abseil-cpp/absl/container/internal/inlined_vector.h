@@ -26,7 +26,6 @@
 #include <utility>
 
 #include "absl/base/attributes.h"
-#include "absl/base/config.h"
 #include "absl/base/macros.h"
 #include "absl/container/internal/compressed_tuple.h"
 #include "absl/memory/memory.h"
@@ -385,17 +384,7 @@ class Storage {
 
   bool GetIsAllocated() const { return GetSizeAndIsAllocated() & 1; }
 
-  Pointer<A> GetAllocatedData() {
-    // GCC 12 has a false-positive -Wmaybe-uninitialized warning here.
-#if ABSL_INTERNAL_HAVE_MIN_GNUC_VERSION(12, 0)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-#endif
-    return data_.allocated.allocated_data;
-#if ABSL_INTERNAL_HAVE_MIN_GNUC_VERSION(12, 0)
-#pragma GCC diagnostic pop
-#endif
-  }
+  Pointer<A> GetAllocatedData() { return data_.allocated.allocated_data; }
 
   ConstPointer<A> GetAllocatedData() const {
     return data_.allocated.allocated_data;
