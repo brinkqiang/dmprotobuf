@@ -49,19 +49,7 @@ absl_cc_library(
   SRCS
     "log_severity.cc"
   DEPS
-    absl::config
     absl::core_headers
-  COPTS
-    ${ABSL_DEFAULT_COPTS}
-)
-
-absl_cc_library(
-  NAME
-    no_destructor
-  HDRS
-    "no_destructor.h"
-  DEPS
-    absl::config
   COPTS
     ${ABSL_DEFAULT_COPTS}
 )
@@ -167,6 +155,7 @@ absl_cc_library(
     "optimization.h"
     "port.h"
     "thread_annotations.h"
+    "internal/thread_annotations.h"
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
@@ -247,7 +236,6 @@ absl_cc_library(
     absl::core_headers
     absl::dynamic_annotations
     absl::log_severity
-    absl::nullability
     absl::raw_logging_internal
     absl::spinlock_wait
     absl::type_traits
@@ -476,7 +464,6 @@ absl_cc_library(
     absl::base
     absl::config
     absl::core_headers
-    absl::nullability
   PUBLIC
 )
 
@@ -518,20 +505,6 @@ absl_cc_test(
     absl::base
     absl::core_headers
     absl::synchronization
-    GTest::gtest_main
-)
-
-absl_cc_test(
-  NAME
-    no_destructor_test
-  SRCS
-    "no_destructor_test.cc"
-  COPTS
-    ${ABSL_TEST_COPTS}
-  DEPS
-    absl::no_destructor
-    absl::config
-    absl::raw_logging_internal
     GTest::gtest_main
 )
 
@@ -704,13 +677,14 @@ absl_cc_library(
     prefetch
   HDRS
     "prefetch.h"
+    "internal/prefetch.h"
   COPTS
     ${ABSL_DEFAULT_COPTS}
   LINKOPTS
     ${ABSL_DEFAULT_LINKOPTS}
   DEPS
     absl::config
-    absl::core_headers
+    absl::core_headers  # TODO(b/265984188): remove
 )
 
 absl_cc_test(
@@ -718,6 +692,7 @@ absl_cc_test(
     prefetch_test
   SRCS
     "prefetch_test.cc"
+    "internal/prefetch_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
   DEPS
