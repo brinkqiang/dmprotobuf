@@ -1,32 +1,9 @@
 // Protocol Buffers - Google's data interchange format
 // Copyright 2008 Google Inc.  All rights reserved.
-// https://developers.google.com/protocol-buffers/
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-// notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-// copyright notice, this list of conditions and the following disclaimer
-// in the documentation and/or other materials provided with the
-// distribution.
-//     * Neither the name of Google Inc. nor the names of its
-// contributors may be used to endorse or promote products derived from
-// this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file or at
+// https://developers.google.com/open-source/licenses/bsd
 
 // Author: kenton@google.com (Kenton Varda)
 //  Based on original Protocol Buffers design by
@@ -38,45 +15,36 @@
 #ifndef GOOGLE_PROTOBUF_GENERATED_MESSAGE_REFLECTION_H__
 #define GOOGLE_PROTOBUF_GENERATED_MESSAGE_REFLECTION_H__
 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <string>
-#include <vector>
-#include <google/protobuf/stubs/casts.h>
-#include <google/protobuf/stubs/common.h>
-// TODO(jasonh): Remove this once the compiler change to directly include this
-// is released to components.
-#include <google/protobuf/generated_enum_reflection.h>
-#include <google/protobuf/message.h>
-#include <google/protobuf/metadata.h>
-#include <google/protobuf/stubs/once.h>
-#include <google/protobuf/port.h>
-#include <google/protobuf/unknown_field_set.h>
 
+#include "absl/base/call_once.h"
+#include "absl/log/absl_check.h"
+#include "google/protobuf/descriptor.h"
+#include "google/protobuf/generated_enum_reflection.h"
+#include "google/protobuf/port.h"
+#include "google/protobuf/unknown_field_set.h"
 
-#include <google/protobuf/port_def.inc>
+// Must be included last.
+#include "google/protobuf/port_def.inc"
 
 #ifdef SWIG
 #error "You cannot SWIG proto headers"
 #endif
 
-namespace upb {
-namespace google_opensource {
-class GMR_Handlers;
-}  // namespace google_opensource
-}  // namespace upb
-
 namespace google {
 namespace protobuf {
-class DescriptorPool;
 class MapKey;
 class MapValueRef;
-}  // namespace protobuf
-}  // namespace google
+class MessageLayoutInspector;
+class Message;
+struct Metadata;
 
-namespace google {
-namespace protobuf {
-namespace flat {
-class MetadataBuilder;
-}  // namespace flat
+namespace io {
+class CodedOutputStream;
+}
 }  // namespace protobuf
 }  // namespace google
 
@@ -84,14 +52,19 @@ namespace google {
 namespace protobuf {
 namespace internal {
 class DefaultEmptyOneof;
-class ReflectionAccessor;
-
-// Defined in this file.
-class GeneratedMessageReflection;
-
 // Defined in other files.
-class ExtensionSet;             // extension_set.h
-class WeakFieldMap;             // weak_field_map.h
+class ExtensionSet;  // extension_set.h
+class WeakFieldMap;  // weak_field_map.h
+
+// Tag used on offsets for fields that don't have a real offset.
+// For example, weak message fields go into the WeakFieldMap and not in an
+// actual field.
+constexpr uint32_t kInvalidFieldOffsetTag = 0x40000000u;
+
+// Mask used on offsets for split fields.
+constexpr uint32_t kSplitFieldOffsetMask = 0x80000000u;
+constexpr uint32_t kLazyMask = 0x1u;
+constexpr uint32_t kInlinedMask = 0x1u;
 
 // This struct describes the internal layout of the message, hence this is
 // used to act on the message reflectively.
@@ -99,7 +72,7 @@ class WeakFieldMap;             // weak_field_map.h
 //                  used to obtain pointers to default instances of embedded
 //                  messages, which GetMessage() will return if the particular
 //                  sub-message has not been initialized yet.  (Thus, all
-//                  embedded message fields *must* have non-NULL pointers
+//                  embedded message fields *must* have non-null pointers
 //                  in the default instance.)
 //   offsets:       An array of ints giving the byte offsets.
 //                  For each oneof or weak field, the offset is relative to the
@@ -127,7 +100,7 @@ class WeakFieldMap;             // weak_field_map.h
 //                  message, or -1 if the message type has no extension
 //                  ranges.
 //   oneof_case_offset:  Offset in the message of an array of uint32s of
-//                  size descriptor->oneof_decl_count().  Each uint32
+//                  size descriptor->oneof_decl_count().  Each uint32_t
 //                  indicates what field is set for each oneof.
 //   object_size:   The size of a message object of this type, as measured
 //                  by sizeof().
@@ -139,21 +112,25 @@ class WeakFieldMap;             // weak_field_map.h
 struct ReflectionSchema {
  public:
   // Size of a google::protobuf::Message object of this type.
-  uint32 GetObjectSize() const { return static_cast<uint32>(object_size_); }
+  uint32_t GetObjectSize() const { return static_cast<uint32_t>(object_size_); }
+
+  bool InRealOneof(const FieldDescriptor* field) const {
+    return field->real_containing_oneof();
+  }
 
   // Offset of a non-oneof field.  Getting a field offset is slightly more
   // efficient when we know statically that it is not a oneof field.
-  uint32 GetFieldOffsetNonOneof(const FieldDescriptor* field) const {
-    GOOGLE_DCHECK(!field->containing_oneof());
+  uint32_t GetFieldOffsetNonOneof(const FieldDescriptor* field) const {
+    ABSL_DCHECK(!InRealOneof(field));
     return OffsetValue(offsets_[field->index()], field->type());
   }
 
   // Offset of any field.
-  uint32 GetFieldOffset(const FieldDescriptor* field) const {
-    if (field->containing_oneof()) {
+  uint32_t GetFieldOffset(const FieldDescriptor* field) const {
+    if (InRealOneof(field)) {
       size_t offset =
-          static_cast<size_t>(field->containing_type()->field_count() +
-          field->containing_oneof()->index());
+          static_cast<size_t>(field->containing_type()->field_count()) +
+          field->containing_oneof()->index();
       return OffsetValue(offsets_[offset], field->type());
     } else {
       return GetFieldOffsetNonOneof(field);
@@ -161,51 +138,61 @@ struct ReflectionSchema {
   }
 
   bool IsFieldInlined(const FieldDescriptor* field) const {
-    if (field->containing_oneof()) {
-      size_t offset =
-          static_cast<size_t>(field->containing_type()->field_count() +
-                              field->containing_oneof()->index());
-      return Inlined(offsets_[offset], field->type());
-    } else {
-      return Inlined(offsets_[field->index()], field->type());
-    }
+    return Inlined(offsets_[field->index()], field->type());
   }
 
-  uint32 GetOneofCaseOffset(const OneofDescriptor* oneof_descriptor) const {
-    return static_cast<uint32>(oneof_case_offset_) +
-           static_cast<uint32>(
-               static_cast<size_t>(oneof_descriptor->index()) * sizeof(uint32));
+  uint32_t GetOneofCaseOffset(const OneofDescriptor* oneof_descriptor) const {
+    return static_cast<uint32_t>(oneof_case_offset_) +
+           static_cast<uint32_t>(
+               static_cast<size_t>(oneof_descriptor->index()) *
+               sizeof(uint32_t));
   }
 
   bool HasHasbits() const { return has_bits_offset_ != -1; }
 
   // Bit index within the bit array of hasbits.  Bit order is low-to-high.
-  uint32 HasBitIndex(const FieldDescriptor* field) const {
-    GOOGLE_DCHECK(HasHasbits());
+  uint32_t HasBitIndex(const FieldDescriptor* field) const {
+    if (has_bits_offset_ == -1) return static_cast<uint32_t>(-1);
+    ABSL_DCHECK(HasHasbits());
     return has_bit_indices_[field->index()];
   }
 
   // Byte offset of the hasbits array.
-  uint32 HasBitsOffset() const {
-    GOOGLE_DCHECK(HasHasbits());
-    return static_cast<uint32>(has_bits_offset_);
+  uint32_t HasBitsOffset() const {
+    ABSL_DCHECK(HasHasbits());
+    return static_cast<uint32_t>(has_bits_offset_);
+  }
+
+  bool HasInlinedString() const { return inlined_string_donated_offset_ != -1; }
+
+  // Bit index within the bit array of _inlined_string_donated_.  Bit order is
+  // low-to-high.
+  uint32_t InlinedStringIndex(const FieldDescriptor* field) const {
+    ABSL_DCHECK(HasInlinedString());
+    return inlined_string_indices_[field->index()];
+  }
+
+  // Byte offset of the _inlined_string_donated_ array.
+  uint32_t InlinedStringDonatedOffset() const {
+    ABSL_DCHECK(HasInlinedString());
+    return static_cast<uint32_t>(inlined_string_donated_offset_);
   }
 
   // The offset of the InternalMetadataWithArena member.
   // For Lite this will actually be an InternalMetadataWithArenaLite.
   // The schema doesn't contain enough information to distinguish between
   // these two cases.
-  uint32 GetMetadataOffset() const {
-    return static_cast<uint32>(metadata_offset_);
+  uint32_t GetMetadataOffset() const {
+    return static_cast<uint32_t>(metadata_offset_);
   }
 
   // Whether this message has an ExtensionSet.
   bool HasExtensionSet() const { return extensions_offset_ != -1; }
 
   // The offset of the ExtensionSet in this message.
-  uint32 GetExtensionSetOffset() const {
-    GOOGLE_DCHECK(HasExtensionSet());
-    return static_cast<uint32>(extensions_offset_);
+  uint32_t GetExtensionSetOffset() const {
+    ABSL_DCHECK(HasExtensionSet());
+    return static_cast<uint32_t>(extensions_offset_);
   }
 
   // The off set of WeakFieldMap when the message contains weak fields.
@@ -218,9 +205,34 @@ struct ReflectionSchema {
 
   // Returns a pointer to the default value for this field.  The size and type
   // of the underlying data depends on the field's type.
-  const void *GetFieldDefault(const FieldDescriptor* field) const {
-    return reinterpret_cast<const uint8*>(default_instance_) +
+  const void* GetFieldDefault(const FieldDescriptor* field) const {
+    return reinterpret_cast<const uint8_t*>(default_instance_) +
            OffsetValue(offsets_[field->index()], field->type());
+  }
+
+  // Returns true if the field is implicitly backed by LazyField.
+  bool IsEagerlyVerifiedLazyField(const FieldDescriptor* field) const {
+    ABSL_DCHECK_EQ(field->type(), FieldDescriptor::TYPE_MESSAGE);
+    (void)field;
+    return false;
+  }
+
+  bool IsSplit() const { return split_offset_ != -1; }
+
+  bool IsSplit(const FieldDescriptor* field) const {
+    return split_offset_ != -1 &&
+           (offsets_[field->index()] & kSplitFieldOffsetMask) != 0;
+  }
+
+  // Byte offset of _split_.
+  uint32_t SplitOffset() const {
+    ABSL_DCHECK(IsSplit());
+    return static_cast<uint32_t>(split_offset_);
+  }
+
+  uint32_t SizeofSplit() const {
+    ABSL_DCHECK(IsSplit());
+    return static_cast<uint32_t>(sizeof_split_);
   }
 
 
@@ -231,32 +243,36 @@ struct ReflectionSchema {
   // them, ie.
   //
   //   ReflectionSchema schema = {a, b, c, d, e, ...};
- // private:
+  // private:
   const Message* default_instance_;
-  const uint32* offsets_;
-  const uint32* has_bit_indices_;
+  const uint32_t* offsets_;
+  const uint32_t* has_bit_indices_;
   int has_bits_offset_;
   int metadata_offset_;
   int extensions_offset_;
   int oneof_case_offset_;
   int object_size_;
   int weak_field_map_offset_;
+  const uint32_t* inlined_string_indices_;
+  int inlined_string_donated_offset_;
+  int split_offset_;
+  int sizeof_split_;
 
   // We tag offset values to provide additional data about fields (such as
-  // inlined).
-  static uint32 OffsetValue(uint32 v, FieldDescriptor::Type type) {
-    if (type == FieldDescriptor::TYPE_STRING ||
+  // "unused" or "lazy" or "inlined").
+  static uint32_t OffsetValue(uint32_t v, FieldDescriptor::Type type) {
+    if (type == FieldDescriptor::TYPE_MESSAGE ||
+        type == FieldDescriptor::TYPE_STRING ||
         type == FieldDescriptor::TYPE_BYTES) {
-      return v & ~1u;
-    } else {
-      return v;
+      return v & (~kSplitFieldOffsetMask) & (~kInlinedMask) & (~kLazyMask);
     }
+    return v & (~kSplitFieldOffsetMask);
   }
 
-  static bool Inlined(uint32 v, FieldDescriptor::Type type) {
+  static bool Inlined(uint32_t v, FieldDescriptor::Type type) {
     if (type == FieldDescriptor::TYPE_STRING ||
         type == FieldDescriptor::TYPE_BYTES) {
-      return v & 1u;
+      return (v & kInlinedMask) != 0u;
     } else {
       // Non string/byte fields are not inlined.
       return false;
@@ -271,456 +287,101 @@ struct ReflectionSchema {
 // EXPERIMENTAL: these are changing rapidly, and may completely disappear
 // or merge with ReflectionSchema.
 struct MigrationSchema {
-  int32 offsets_index;
-  int32 has_bit_indices_index;
+  int32_t offsets_index;
+  int32_t has_bit_indices_index;
+  int32_t inlined_string_indices_index;
   int object_size;
 };
 
-// THIS CLASS IS NOT INTENDED FOR DIRECT USE.  It is intended for use
-// by generated code.  This class is just a big hack that reduces code
-// size.
-//
-// A GeneratedMessageReflection is an implementation of Reflection
-// which expects all fields to be backed by simple variables located in
-// memory.  The locations are given using a base pointer and a set of
-// offsets.
-//
-// It is required that the user represents fields of each type in a standard
-// way, so that GeneratedMessageReflection can cast the void* pointer to
-// the appropriate type.  For primitive fields and string fields, each field
-// should be represented using the obvious C++ primitive type.  Enums and
-// Messages are different:
-//  - Singular Message fields are stored as a pointer to a Message.  These
-//    should start out NULL, except for in the default instance where they
-//    should start out pointing to other default instances.
-//  - Enum fields are stored as an int.  This int must always contain
-//    a valid value, such that EnumDescriptor::FindValueByNumber() would
-//    not return NULL.
-//  - Repeated fields are stored as RepeatedFields or RepeatedPtrFields
-//    of whatever type the individual field would be.  Strings and
-//    Messages use RepeatedPtrFields while everything else uses
-//    RepeatedFields.
-class GeneratedMessageReflection final : public Reflection {
- public:
-  // Constructs a GeneratedMessageReflection.
-  // Parameters:
-  //   descriptor:    The descriptor for the message type being implemented.
-  //   schema:        The description of the internal guts of the message.
-  //   pool:          DescriptorPool to search for extension definitions.  Only
-  //                  used by FindKnownExtensionByName() and
-  //                  FindKnownExtensionByNumber().
-  //   factory:       MessageFactory to use to construct extension messages.
-  GeneratedMessageReflection(const Descriptor* descriptor,
-                             const ReflectionSchema& schema,
-                             const DescriptorPool* pool,
-                             MessageFactory* factory);
-
-  ~GeneratedMessageReflection() override;
-
-  // implements Reflection -------------------------------------------
-
-  const UnknownFieldSet& GetUnknownFields(
-      const Message& message) const override;
-  UnknownFieldSet* MutableUnknownFields(Message* message) const override;
-
-  size_t SpaceUsedLong(const Message& message) const override;
-
-  bool HasField(const Message& message,
-                const FieldDescriptor* field) const override;
-  int FieldSize(const Message& message,
-                const FieldDescriptor* field) const override;
-  void ClearField(Message* message,
-                  const FieldDescriptor* field) const override;
-  bool HasOneof(const Message& message,
-                const OneofDescriptor* oneof_descriptor) const override;
-  void ClearOneof(Message* message,
-                  const OneofDescriptor* oneof_descriptor) const override;
-  void RemoveLast(Message* message,
-                  const FieldDescriptor* field) const override;
-  Message* ReleaseLast(Message* message,
-                       const FieldDescriptor* field) const override;
-  void Swap(Message* message1, Message* message2) const override;
-  void SwapFields(
-      Message* message1, Message* message2,
-      const std::vector<const FieldDescriptor*>& fields) const override;
-  void SwapElements(Message* message, const FieldDescriptor* field, int index1,
-                    int index2) const override;
-  void ListFields(const Message& message,
-                  std::vector<const FieldDescriptor*>* output) const override;
-  int32 GetInt32(const Message& message,
-                 const FieldDescriptor* field) const override;
-  int64 GetInt64(const Message& message,
-                 const FieldDescriptor* field) const override;
-  uint32 GetUInt32(const Message& message,
-                   const FieldDescriptor* field) const override;
-  uint64 GetUInt64(const Message& message,
-                   const FieldDescriptor* field) const override;
-  float GetFloat(const Message& message,
-                 const FieldDescriptor* field) const override;
-  double GetDouble(const Message& message,
-                   const FieldDescriptor* field) const override;
-  bool GetBool(const Message& message,
-               const FieldDescriptor* field) const override;
-  std::string GetString(const Message& message,
-                   const FieldDescriptor* field) const override;
-  const std::string& GetStringReference(const Message& message,
-                                   const FieldDescriptor* field,
-                                   std::string* scratch) const override;
-  const EnumValueDescriptor* GetEnum(
-      const Message& message, const FieldDescriptor* field) const override;
-  int GetEnumValue(const Message& message,
-                   const FieldDescriptor* field) const override;
-  const Message& GetMessage(const Message& message,
-                            const FieldDescriptor* field,
-                            MessageFactory* factory = NULL) const override;
-
-  const FieldDescriptor* GetOneofFieldDescriptor(
-      const Message& message,
-      const OneofDescriptor* oneof_descriptor) const override;
-
- private:
-  bool ContainsMapKey(const Message& message, const FieldDescriptor* field,
-                      const MapKey& key) const override;
-  bool InsertOrLookupMapValue(Message* message, const FieldDescriptor* field,
-                              const MapKey& key,
-                              MapValueRef* val) const override;
-  bool DeleteMapValue(Message* message, const FieldDescriptor* field,
-                      const MapKey& key) const override;
-  MapIterator MapBegin(Message* message,
-                       const FieldDescriptor* field) const override;
-  MapIterator MapEnd(Message* message,
-                     const FieldDescriptor* field) const override;
-  int MapSize(const Message& message,
-              const FieldDescriptor* field) const override;
-
- public:
-  void SetInt32(Message* message, const FieldDescriptor* field,
-                int32 value) const override;
-  void SetInt64(Message* message, const FieldDescriptor* field,
-                int64 value) const override;
-  void SetUInt32(Message* message, const FieldDescriptor* field,
-                 uint32 value) const override;
-  void SetUInt64(Message* message, const FieldDescriptor* field,
-                 uint64 value) const override;
-  void SetFloat(Message* message, const FieldDescriptor* field,
-                float value) const override;
-  void SetDouble(Message* message, const FieldDescriptor* field,
-                 double value) const override;
-  void SetBool(Message* message, const FieldDescriptor* field,
-               bool value) const override;
-  void SetString(Message* message, const FieldDescriptor* field,
-                 const std::string& value) const override;
-  void SetEnum(Message* message, const FieldDescriptor* field,
-               const EnumValueDescriptor* value) const override;
-  void SetEnumValue(Message* message, const FieldDescriptor* field,
-                    int value) const override;
-  Message* MutableMessage(Message* message, const FieldDescriptor* field,
-                          MessageFactory* factory = NULL) const override;
-  void SetAllocatedMessage(Message* message, Message* sub_message,
-                           const FieldDescriptor* field) const override;
-  Message* ReleaseMessage(Message* message, const FieldDescriptor* field,
-                          MessageFactory* factory = NULL) const override;
-
-  int32 GetRepeatedInt32(const Message& message, const FieldDescriptor* field,
-                         int index) const override;
-  int64 GetRepeatedInt64(const Message& message, const FieldDescriptor* field,
-                         int index) const override;
-  uint32 GetRepeatedUInt32(const Message& message, const FieldDescriptor* field,
-                           int index) const override;
-  uint64 GetRepeatedUInt64(const Message& message, const FieldDescriptor* field,
-                           int index) const override;
-  float GetRepeatedFloat(const Message& message, const FieldDescriptor* field,
-                         int index) const override;
-  double GetRepeatedDouble(const Message& message, const FieldDescriptor* field,
-                           int index) const override;
-  bool GetRepeatedBool(const Message& message, const FieldDescriptor* field,
-                       int index) const override;
-  std::string GetRepeatedString(const Message& message, const FieldDescriptor* field,
-                           int index) const override;
-  const std::string& GetRepeatedStringReference(const Message& message,
-                                           const FieldDescriptor* field,
-                                           int index,
-                                           std::string* scratch) const override;
-  const EnumValueDescriptor* GetRepeatedEnum(const Message& message,
-                                             const FieldDescriptor* field,
-                                             int index) const override;
-  int GetRepeatedEnumValue(const Message& message, const FieldDescriptor* field,
-                           int index) const override;
-  const Message& GetRepeatedMessage(const Message& message,
-                                    const FieldDescriptor* field,
-                                    int index) const override;
-
-  // Set the value of a field.
-  void SetRepeatedInt32(Message* message, const FieldDescriptor* field,
-                        int index, int32 value) const override;
-  void SetRepeatedInt64(Message* message, const FieldDescriptor* field,
-                        int index, int64 value) const override;
-  void SetRepeatedUInt32(Message* message, const FieldDescriptor* field,
-                         int index, uint32 value) const override;
-  void SetRepeatedUInt64(Message* message, const FieldDescriptor* field,
-                         int index, uint64 value) const override;
-  void SetRepeatedFloat(Message* message, const FieldDescriptor* field,
-                        int index, float value) const override;
-  void SetRepeatedDouble(Message* message, const FieldDescriptor* field,
-                         int index, double value) const override;
-  void SetRepeatedBool(Message* message, const FieldDescriptor* field,
-                       int index, bool value) const override;
-  void SetRepeatedString(Message* message, const FieldDescriptor* field,
-                         int index, const std::string& value) const override;
-  void SetRepeatedEnum(Message* message, const FieldDescriptor* field,
-                       int index,
-                       const EnumValueDescriptor* value) const override;
-  void SetRepeatedEnumValue(Message* message, const FieldDescriptor* field,
-                            int index, int value) const override;
-  // Get a mutable pointer to a field with a message type.
-  Message* MutableRepeatedMessage(Message* message,
-                                  const FieldDescriptor* field,
-                                  int index) const override;
-
-  void AddInt32(Message* message, const FieldDescriptor* field,
-                int32 value) const override;
-  void AddInt64(Message* message, const FieldDescriptor* field,
-                int64 value) const override;
-  void AddUInt32(Message* message, const FieldDescriptor* field,
-                 uint32 value) const override;
-  void AddUInt64(Message* message, const FieldDescriptor* field,
-                 uint64 value) const override;
-  void AddFloat(Message* message, const FieldDescriptor* field,
-                float value) const override;
-  void AddDouble(Message* message, const FieldDescriptor* field,
-                 double value) const override;
-  void AddBool(Message* message, const FieldDescriptor* field,
-               bool value) const override;
-  void AddString(Message* message, const FieldDescriptor* field,
-                 const std::string& value) const override;
-  void AddEnum(Message* message, const FieldDescriptor* field,
-               const EnumValueDescriptor* value) const override;
-  void AddEnumValue(Message* message, const FieldDescriptor* field,
-                    int value) const override;
-  Message* AddMessage(Message* message, const FieldDescriptor* field,
-                      MessageFactory* factory = NULL) const override;
-  void AddAllocatedMessage(Message* message, const FieldDescriptor* field,
-                           Message* new_entry) const override;
-
-  const FieldDescriptor* FindKnownExtensionByName(
-      const std::string& name) const override;
-  const FieldDescriptor* FindKnownExtensionByNumber(int number) const override;
-
-  bool SupportsUnknownEnumValues() const override;
-
-  // This value for arena_offset_ indicates that there is no arena pointer in
-  // this message (e.g., old generated code).
-  static const int kNoArenaPointer = -1;
-
-  // This value for unknown_field_offset_ indicates that there is no
-  // UnknownFieldSet in this message, and that instead, we are using the
-  // Zero-Overhead Arena Pointer trick. When this is the case, arena_offset_
-  // actually indexes to an InternalMetadataWithArena instance, which can return
-  // either an arena pointer or an UnknownFieldSet or both. It is never the case
-  // that unknown_field_offset_ == kUnknownFieldSetInMetadata && arena_offset_
-  // == kNoArenaPointer.
-  static const int kUnknownFieldSetInMetadata = -1;
-
- protected:
-  void* MutableRawRepeatedField(Message* message, const FieldDescriptor* field,
-                                FieldDescriptor::CppType, int ctype,
-                                const Descriptor* desc) const override;
-
-  const void* GetRawRepeatedField(const Message& message,
-                                  const FieldDescriptor* field,
-                                  FieldDescriptor::CppType, int ctype,
-                                  const Descriptor* desc) const override;
-
-  MessageFactory* GetMessageFactory() const override;
-
-  void* RepeatedFieldData(Message* message, const FieldDescriptor* field,
-                          FieldDescriptor::CppType cpp_type,
-                          const Descriptor* message_type) const override;
-
- private:
-  friend class google::protobuf::flat::MetadataBuilder;
-  friend class ReflectionAccessor;
-  friend class upb::google_opensource::GMR_Handlers;
-
-  const Descriptor* const descriptor_;
-  const ReflectionSchema schema_;
-  const DescriptorPool* const descriptor_pool_;
-  MessageFactory* const message_factory_;
-
-  // Last non weak field index. This is an optimization when most weak fields
-  // are at the end of the containing message. If a message proto doesn't
-  // contain weak fields, then this field equals descriptor_->field_count().
-  int last_non_weak_field_index_;
-
-  template <class T>
-  const T& GetRawNonOneof(const Message& message,
-                          const FieldDescriptor* field) const;
-  template <class T>
-  T* MutableRawNonOneof(Message* message, const FieldDescriptor* field) const;
-
-  template <typename Type>
-  const Type& GetRaw(const Message& message,
-                            const FieldDescriptor* field) const;
-  template <typename Type>
-  inline Type* MutableRaw(Message* message,
-                          const FieldDescriptor* field) const;
-  template <typename Type>
-  inline const Type& DefaultRaw(const FieldDescriptor* field) const;
-
-  inline const uint32* GetHasBits(const Message& message) const;
-  inline uint32* MutableHasBits(Message* message) const;
-  inline uint32 GetOneofCase(
-      const Message& message,
-      const OneofDescriptor* oneof_descriptor) const;
-  inline uint32* MutableOneofCase(
-      Message* message,
-      const OneofDescriptor* oneof_descriptor) const;
-  inline const ExtensionSet& GetExtensionSet(const Message& message) const;
-  inline ExtensionSet* MutableExtensionSet(Message* message) const;
-  inline Arena* GetArena(Message* message) const;
-
-  inline const InternalMetadataWithArena& GetInternalMetadataWithArena(
-      const Message& message) const;
-
-  inline InternalMetadataWithArena*
-      MutableInternalMetadataWithArena(Message* message) const;
-
-  inline bool IsInlined(const FieldDescriptor* field) const;
-
-  inline bool HasBit(const Message& message,
-                     const FieldDescriptor* field) const;
-  inline void SetBit(Message* message,
-                     const FieldDescriptor* field) const;
-  inline void ClearBit(Message* message,
-                       const FieldDescriptor* field) const;
-  inline void SwapBit(Message* message1,
-                      Message* message2,
-                      const FieldDescriptor* field) const;
-
-  // This function only swaps the field. Should swap corresponding has_bit
-  // before or after using this function.
-  void SwapField(Message* message1,
-                 Message* message2,
-                 const FieldDescriptor* field) const;
-
-  void SwapOneofField(Message* message1,
-                      Message* message2,
-                      const OneofDescriptor* oneof_descriptor) const;
-
-  inline bool HasOneofField(const Message& message,
-                            const FieldDescriptor* field) const;
-  inline void SetOneofCase(Message* message,
-                           const FieldDescriptor* field) const;
-  inline void ClearOneofField(Message* message,
-                              const FieldDescriptor* field) const;
-
-  template <typename Type>
-  inline const Type& GetField(const Message& message,
-                              const FieldDescriptor* field) const;
-  template <typename Type>
-  inline void SetField(Message* message,
-                       const FieldDescriptor* field, const Type& value) const;
-  template <typename Type>
-  inline Type* MutableField(Message* message,
-                            const FieldDescriptor* field) const;
-  template <typename Type>
-  inline const Type& GetRepeatedField(const Message& message,
-                                      const FieldDescriptor* field,
-                                      int index) const;
-  template <typename Type>
-  inline const Type& GetRepeatedPtrField(const Message& message,
-                                         const FieldDescriptor* field,
-                                         int index) const;
-  template <typename Type>
-  inline void SetRepeatedField(Message* message,
-                               const FieldDescriptor* field, int index,
-                               Type value) const;
-  template <typename Type>
-  inline Type* MutableRepeatedField(Message* message,
-                                    const FieldDescriptor* field,
-                                    int index) const;
-  template <typename Type>
-  inline void AddField(Message* message,
-                       const FieldDescriptor* field, const Type& value) const;
-  template <typename Type>
-  inline Type* AddField(Message* message,
-                        const FieldDescriptor* field) const;
-
-  int GetExtensionNumberOrDie(const Descriptor* type) const;
-
-  // Internal versions of EnumValue API perform no checking. Called after checks
-  // by public methods.
-  void SetEnumValueInternal(Message* message,
-                            const FieldDescriptor* field,
-                            int value) const;
-  void SetRepeatedEnumValueInternal(Message* message,
-                                    const FieldDescriptor* field,
-                                    int index,
-                                    int value) const;
-  void AddEnumValueInternal(Message* message,
-                            const FieldDescriptor* field,
-                            int value) const;
-
-
-  Message* UnsafeArenaReleaseMessage(Message* message,
-                                     const FieldDescriptor* field,
-                                     MessageFactory* factory = NULL) const;
-
-  void UnsafeArenaSetAllocatedMessage(Message* message,
-                                      Message* sub_message,
-                                      const FieldDescriptor* field) const;
-
-  internal::MapFieldBase* MutableMapData(
-      Message* message, const FieldDescriptor* field) const override;
-
-  const internal::MapFieldBase* GetMapData(
-      const Message& message, const FieldDescriptor* field) const override;
-
-  friend inline  // inline so nobody can call this function.
-      void
-      RegisterAllTypesInternal(const Metadata* file_level_metadata, int size);
-  GOOGLE_DISALLOW_EVIL_CONSTRUCTORS(GeneratedMessageReflection);
-};
-
-typedef void (*InitFunc)();
-
-struct PROTOBUF_EXPORT AssignDescriptorsTable {
-  once_flag once;
-  InitFunc add_descriptors;
+// This struct tries to reduce unnecessary padding.
+// The num_xxx might not be close to their respective pointer, but this saves
+// padding.
+struct PROTOBUF_EXPORT DescriptorTable {
+  mutable bool is_initialized;
+  bool is_eager;
+  int size;  // of serialized descriptor
+  const char* descriptor;
   const char* filename;
+  absl::once_flag* once;
+  const DescriptorTable* const* deps;
+  int num_deps;
+  int num_messages;
   const MigrationSchema* schemas;
   const Message* const* default_instances;
-  const uint32* offsets;
+  const uint32_t* offsets;
   // update the following descriptor arrays.
-  Metadata* file_level_metadata;
-  int num_messages;
   const EnumDescriptor** file_level_enum_descriptors;
   const ServiceDescriptor** file_level_service_descriptors;
 };
 
-void PROTOBUF_EXPORT AssignDescriptors(AssignDescriptorsTable* table);
-
-struct PROTOBUF_EXPORT DescriptorTable {
-  bool is_initialized;
-  InitFunc init_defaults;
-  const char* descriptor;
-  const char* filename;
-  AssignDescriptorsTable* assign_descriptors_table;
-  int size;  // of serialized descriptor
-};
-
-void PROTOBUF_EXPORT AddDescriptors(DescriptorTable* table,
-                                    const InitFunc* deps, int num_deps);
+// AssignDescriptors() pulls the compiled FileDescriptor from the DescriptorPool
+// and uses it to populate all of the global variables which store pointers to
+// the descriptor objects.  It also constructs the reflection objects.  It is
+// called the first time anyone calls descriptor() or GetReflection() on one of
+// the types defined in the file.  AssignDescriptors() is thread-safe.
+void PROTOBUF_EXPORT AssignDescriptors(const DescriptorTable* table);
+// As above, but the caller did the call_once call already.
+void PROTOBUF_EXPORT
+AssignDescriptorsOnceInnerCall(const DescriptorTable* table);
 
 // These cannot be in lite so we put them in the reflection.
-PROTOBUF_EXPORT void UnknownFieldSetSerializer(const uint8* base, uint32 offset,
-                                               uint32 tag, uint32 has_offset,
+PROTOBUF_EXPORT void UnknownFieldSetSerializer(const uint8_t* base,
+                                               uint32_t offset, uint32_t tag,
+                                               uint32_t has_offset,
                                                io::CodedOutputStream* output);
+
+PROTOBUF_EXPORT void InitializeFileDescriptorDefaultInstances();
+
+PROTOBUF_EXPORT void AddDescriptors(const DescriptorTable* table);
+
+struct PROTOBUF_EXPORT AddDescriptorsRunner {
+  explicit AddDescriptorsRunner(const DescriptorTable* table);
+};
+
+// Retrieves the existing prototype out of a descriptor table.
+// If it doesn't exist:
+//  - If force_build is true, asks the generated message factory for one.
+//  - Otherwise, return null
+const Message* GetPrototypeForWeakDescriptor(const DescriptorTable* table,
+                                             int index, bool force_build);
+
+struct DenseEnumCacheInfo {
+  std::atomic<const std::string**> cache;
+  int min_val;
+  int max_val;
+  const EnumDescriptor* (*descriptor_fn)();
+};
+PROTOBUF_EXPORT const std::string& NameOfDenseEnumSlow(int v,
+                                                       DenseEnumCacheInfo*);
+
+// Similar to the routine NameOfEnum, this routine returns the name of an enum.
+// Unlike that routine, it allocates, on-demand, a block of pointers to the
+// std::string objects allocated by reflection to store the enum names. This
+// way, as long as the enum values are fairly dense, looking them up can be
+// very fast. This assumes all the enums fall in the range [min_val .. max_val].
+template <const EnumDescriptor* (*descriptor_fn)(), int min_val, int max_val>
+const std::string& NameOfDenseEnum(int v) {
+  static_assert(max_val - min_val >= 0, "Too many enums between min and max.");
+  static DenseEnumCacheInfo deci = {/* atomic ptr */ {}, min_val, max_val,
+                                    descriptor_fn};
+  const std::string** cache = deci.cache.load(std::memory_order_acquire );
+  if (PROTOBUF_PREDICT_TRUE(cache != nullptr)) {
+    if (PROTOBUF_PREDICT_TRUE(v >= min_val && v <= max_val)) {
+      return *cache[v - min_val];
+    }
+  }
+  return NameOfDenseEnumSlow(v, &deci);
+}
+
+// Returns whether this type of field is stored in the split struct as a raw
+// pointer.
+PROTOBUF_EXPORT bool SplitFieldHasExtraIndirection(
+    const FieldDescriptor* field);
 
 }  // namespace internal
 }  // namespace protobuf
 }  // namespace google
 
-#include <google/protobuf/port_undef.inc>
+#include "google/protobuf/port_undef.inc"
 
 #endif  // GOOGLE_PROTOBUF_GENERATED_MESSAGE_REFLECTION_H__

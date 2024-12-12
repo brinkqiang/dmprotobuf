@@ -2,12 +2,15 @@
 #
 # Helper to do build so you don't have to remember all the steps/args.
 
-
 set -eu
 
 # Some base locations.
 readonly ScriptDir=$(dirname "$(echo $0 | sed -e "s,^\([^/]\),$(pwd)/\1,")")
 readonly ProtoRootDir="${ScriptDir}/../.."
+readonly BazelFlags="${BAZEL_FLAGS:---announce_rc --macos_minimum_os=10.13}"
+
+# Invoke with BAZEL=bazelisk to use that instead.
+readonly BazelBin="${BAZEL:-bazel}"
 
 printUsage() {
   NAME=$(basename "${0}")
@@ -24,15 +27,9 @@ OPTIONS:
          Show this message
    -c, --clean
          Issue a clean before the normal build.
-   -a, --autogen
-         Start by rerunning autogen & configure.
-   -r, --regenerate-descriptors
-         Run generate_descriptor_proto.sh to regenerate all the checked in
-         proto sources.
-   -j #, --jobs #
-         Force the number of parallel jobs (useful for debugging build issues).
-   --core-only
-         Skip some of the core protobuf build/checks to shorten the build time.
+   --full-build
+         By default only protoc is built within protobuf, this option will
+         enable a full build/test of the entire protobuf project.
    --skip-xcode
          Skip the invoke of Xcode to test the runtime on both iOS and OS X.
    --skip-xcode-ios
@@ -41,12 +38,15 @@ OPTIONS:
          Skip the Xcode Debug configuration.
    --skip-xcode-release
          Skip the Xcode Release configuration.
-   --skip-xcode-osx
+   --skip-xcode-osx | --skip-xcode-macos
          Skip the invoke of Xcode to test the runtime on OS X.
    --skip-xcode-tvos
          Skip the invoke of Xcode to test the runtime on tvOS.
    --skip-objc-conformance
          Skip the Objective C conformance tests (run on OS X).
+   --skip-xcpretty
+         By default, if xcpretty is installed, it will be used, this option will
+         skip it even it it is installed.
    --xcode-quiet
          Pass -quiet to xcodebuild.
 
@@ -60,28 +60,18 @@ header() {
   echo "========================================================================"
 }
 
-# Thanks to libtool, builds can fail in odd ways and since it eats some output
-# it can be hard to spot, so force error output if make exits with a non zero.
-wrapped_make() {
-  set +e  # Don't stop if the command fails.
-  make $*
-  MAKE_EXIT_STATUS=$?
-  if [ ${MAKE_EXIT_STATUS} -ne 0 ]; then
-    echo "Error: 'make $*' exited with status ${MAKE_EXIT_STATUS}"
-    exit ${MAKE_EXIT_STATUS}
-  fi
-  set -e
+xcodebuild_xcpretty() {
+  set -o pipefail && xcodebuild "${@}" | xcpretty
 }
 
-NUM_MAKE_JOBS=$(/usr/sbin/sysctl -n hw.ncpu)
-if [[ "${NUM_MAKE_JOBS}" -lt 2 ]] ; then
-  NUM_MAKE_JOBS=2
+if hash xcpretty >/dev/null 2>&1 ; then
+  XCODEBUILD=xcodebuild_xcpretty
+else
+  XCODEBUILD=xcodebuild
 fi
 
-DO_AUTOGEN=no
 DO_CLEAN=no
-REGEN_DESCRIPTORS=no
-CORE_ONLY=no
+FULL_BUILD=no
 DO_XCODE_IOS_TESTS=yes
 DO_XCODE_OSX_TESTS=yes
 DO_XCODE_TVOS_TESTS=yes
@@ -98,18 +88,8 @@ while [[ $# != 0 ]]; do
     -c | --clean )
       DO_CLEAN=yes
       ;;
-    -a | --autogen )
-      DO_AUTOGEN=yes
-      ;;
-    -r | --regenerate-descriptors )
-      REGEN_DESCRIPTORS=yes
-      ;;
-    -j | --jobs )
-      shift
-      NUM_MAKE_JOBS="${1}"
-      ;;
-    --core-only )
-      CORE_ONLY=yes
+    --full-build )
+      FULL_BUILD=yes
       ;;
     --skip-xcode )
       DO_XCODE_IOS_TESTS=no
@@ -119,7 +99,7 @@ while [[ $# != 0 ]]; do
     --skip-xcode-ios )
       DO_XCODE_IOS_TESTS=no
       ;;
-    --skip-xcode-osx )
+    --skip-xcode-osx | --skip-xcode-macos)
       DO_XCODE_OSX_TESTS=no
       ;;
     --skip-xcode-tvos )
@@ -133,6 +113,9 @@ while [[ $# != 0 ]]; do
       ;;
     --skip-objc-conformance )
       DO_OBJC_CONFORMANCE_TESTS=no
+      ;;
+    --skip-xcpretty )
+      XCODEBUILD=xcodebuild
       ;;
     --xcode-quiet )
       XCODE_QUIET=yes
@@ -154,22 +137,9 @@ done
 # Into the proto dir.
 cd "${ProtoRootDir}"
 
-# if no Makefile, force the autogen.
-if [[ ! -f Makefile ]] ; then
-  DO_AUTOGEN=yes
-fi
-
-if [[ "${DO_AUTOGEN}" == "yes" ]] ; then
-  header "Running autogen & configure"
-  ./autogen.sh
-  ./configure \
-    CPPFLAGS="-mmacosx-version-min=10.9 -Wunused-const-variable -Wunused-function" \
-    CXXFLAGS="-Wnon-virtual-dtor -Woverloaded-virtual"
-fi
-
 if [[ "${DO_CLEAN}" == "yes" ]] ; then
   header "Cleaning"
-  wrapped_make clean
+  ${BazelBin} clean
   if [[ "${DO_XCODE_IOS_TESTS}" == "yes" ]] ; then
     XCODEBUILD_CLEAN_BASE_IOS=(
       xcodebuild
@@ -211,83 +181,42 @@ if [[ "${DO_CLEAN}" == "yes" ]] ; then
   fi
 fi
 
-if [[ "${REGEN_DESCRIPTORS}" == "yes" ]] ; then
-  header "Regenerating the descriptor sources."
-  ./generate_descriptor_proto.sh -j "${NUM_MAKE_JOBS}"
-fi
-
-if [[ "${CORE_ONLY}" == "yes" ]] ; then
-  header "Building core Only"
-  wrapped_make -j "${NUM_MAKE_JOBS}"
+if [[ "${FULL_BUILD}" == "yes" ]] ; then
+  header "Build/Test: everything"
+  ${BazelBin} test //:protoc //:protobuf //src/... $BazelFlags
 else
-  header "Building"
-  # Can't issue these together, when fully parallel, something sometimes chokes
-  # at random.
-  wrapped_make -j "${NUM_MAKE_JOBS}" all
-  wrapped_make -j "${NUM_MAKE_JOBS}" check
-  # Fire off the conformance tests also.
-  cd conformance
-  wrapped_make -j "${NUM_MAKE_JOBS}" test_cpp
-  cd ..
+  header "Building: protoc"
+  ${BazelBin} build //:protoc $BazelFlags
 fi
 
 # Ensure the WKT sources checked in are current.
-objectivec/generate_well_known_types.sh --check-only -j "${NUM_MAKE_JOBS}"
+objectivec/generate_well_known_types.sh --check-only
 
-header "Checking on the ObjC Runtime Code"
-objectivec/DevTools/pddm_tests.py
-if ! objectivec/DevTools/pddm.py --dry-run objectivec/*.[hm] objectivec/Tests/*.[hm] ; then
-  echo ""
-  echo "Update by running:"
-  echo "   objectivec/DevTools/pddm.py objectivec/*.[hm] objectivec/Tests/*.[hm]"
-  exit 1
-fi
+header "Checking on the ObjC Runtime pddm expansions"
+${BazelBin} test //objectivec:sources_pddm_expansion_test $BazelFlags
 
 readonly XCODE_VERSION_LINE="$(xcodebuild -version | grep Xcode\  )"
 readonly XCODE_VERSION="${XCODE_VERSION_LINE/Xcode /}"  # drop the prefix.
 
 if [[ "${DO_XCODE_IOS_TESTS}" == "yes" ]] ; then
   XCODEBUILD_TEST_BASE_IOS=(
-    xcodebuild
+    "${XCODEBUILD}"
       -project objectivec/ProtocolBuffers_iOS.xcodeproj
       -scheme ProtocolBuffers
   )
   if [[ "${XCODE_QUIET}" == "yes" ]] ; then
     XCODEBUILD_TEST_BASE_IOS+=( -quiet )
   fi
-  # Don't need to worry about form factors or retina/non retina;
-  # just pick a mix of OS Versions and 32/64 bit.
+  # Don't need to worry about form factors or retina/non retina.
   # NOTE: Different Xcode have different simulated hardware/os support.
   case "${XCODE_VERSION}" in
-    [6-8].* )
-      echo "ERROR: The unittests include Swift code that is now Swift 4.0." 1>&2
-      echo "ERROR: Xcode 9.0 or higher is required to build the test suite, but the library works with Xcode 7.x." 1>&2
+    [6-9].* | 1[0-2].* )
+      echo "ERROR: Xcode 13.3.1 or higher is required." 1>&2
       exit 11
       ;;
-    9.[0-2]* )
+    13.* | 14.*)
       XCODEBUILD_TEST_BASE_IOS+=(
-          -destination "platform=iOS Simulator,name=iPhone 4s,OS=8.1" # 32bit
-          -destination "platform=iOS Simulator,name=iPhone 7,OS=latest" # 64bit
-          # 9.0-9.2 all seem to often fail running destinations in parallel
-          -disable-concurrent-testing
-      )
-      ;;
-    9.[3-4]* )
-      XCODEBUILD_TEST_BASE_IOS+=(
-          # Xcode 9.3 chokes targeting iOS 8.x - http://www.openradar.me/39335367
-          -destination "platform=iOS Simulator,name=iPhone 4s,OS=9.0" # 32bit
-          -destination "platform=iOS Simulator,name=iPhone 7,OS=latest" # 64bit
-          # 9.3 also seems to often fail running destinations in parallel
-          -disable-concurrent-testing
-      )
-      ;;
-    10.[0-1]* )
-      XCODEBUILD_TEST_BASE_IOS+=(
-          -destination "platform=iOS Simulator,name=iPhone 4s,OS=8.1" # 32bit
-          -destination "platform=iOS Simulator,name=iPhone 7,OS=latest" # 64bit
-          # 10.x also seems to often fail running destinations in parallel (with
-          # 32bit one include atleast)
-          -disable-concurrent-destination-testing
+          -destination "platform=iOS Simulator,name=iPhone 13,OS=latest"
       )
       ;;
     * )
@@ -311,19 +240,17 @@ if [[ "${DO_XCODE_IOS_TESTS}" == "yes" ]] ; then
 fi
 if [[ "${DO_XCODE_OSX_TESTS}" == "yes" ]] ; then
   XCODEBUILD_TEST_BASE_OSX=(
-    xcodebuild
+    "${XCODEBUILD}"
       -project objectivec/ProtocolBuffers_OSX.xcodeproj
       -scheme ProtocolBuffers
-      # Since the ObjC 2.0 Runtime is required, 32bit OS X isn't supported.
-      -destination "platform=OS X,arch=x86_64" # 64bit
+      -destination "platform=macOS"
   )
   if [[ "${XCODE_QUIET}" == "yes" ]] ; then
     XCODEBUILD_TEST_BASE_OSX+=( -quiet )
   fi
   case "${XCODE_VERSION}" in
-    [6-8].* )
-      echo "ERROR: The unittests include Swift code that is now Swift 4.0." 1>&2
-      echo "ERROR: Xcode 9.0 or higher is required to build the test suite, but the library works with Xcode 7.x." 1>&2
+    [6-9].* | 1[0-2].* )
+      echo "ERROR: Xcode 13.3.1 or higher is required." 1>&2
       exit 11
       ;;
   esac
@@ -338,13 +265,28 @@ if [[ "${DO_XCODE_OSX_TESTS}" == "yes" ]] ; then
 fi
 if [[ "${DO_XCODE_TVOS_TESTS}" == "yes" ]] ; then
   XCODEBUILD_TEST_BASE_TVOS=(
-    xcodebuild
+    "${XCODEBUILD}"
       -project objectivec/ProtocolBuffers_tvOS.xcodeproj
       -scheme ProtocolBuffers
-      # Test on the oldest and current. 
-      -destination "platform=tvOS Simulator,name=Apple TV 1080p,OS=9.0"
-      -destination "platform=tvOS Simulator,name=Apple TV,OS=latest"
   )
+  case "${XCODE_VERSION}" in
+    [6-9].* | 1[0-2].* )
+      echo "ERROR: Xcode 13.3.1 or higher is required." 1>&2
+      exit 11
+      ;;
+    13.* | 14.*)
+      XCODEBUILD_TEST_BASE_TVOS+=(
+        -destination "platform=tvOS Simulator,name=Apple TV 4K (2nd generation),OS=latest"
+      )
+      ;;
+    * )
+      echo ""
+      echo "ATTENTION: Time to update the simulator targets for Xcode ${XCODE_VERSION}"
+      echo ""
+      echo "ERROR: Build aborted!"
+      exit 2
+      ;;
+  esac
   if [[ "${XCODE_QUIET}" == "yes" ]] ; then
     XCODEBUILD_TEST_BASE_TVOS+=( -quiet )
   fi
@@ -360,9 +302,7 @@ fi
 
 if [[ "${DO_OBJC_CONFORMANCE_TESTS}" == "yes" ]] ; then
   header "Running ObjC Conformance Tests"
-  cd conformance
-  wrapped_make -j "${NUM_MAKE_JOBS}" test_objc
-  cd ..
+  ${BazelBin} test //objectivec:conformance_test $BazelFlags
 fi
 
 echo ""
