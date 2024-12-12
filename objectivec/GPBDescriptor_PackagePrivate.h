@@ -80,6 +80,10 @@ typedef struct GPBFileDescription {
 // Describes a single field in a protobuf as it is represented as an ivar.
 typedef struct GPBMessageFieldDescription {
   // Name of ivar.
+  // Note that we looked into using a SEL here instead (which really is just a C string)
+  // but there is not a way to initialize an SEL with a constant (@selector is not constant) so the
+  // additional code generated to initialize the value is actually bigger in size than just using a
+  // C identifier for large apps.
   const char *name;
   union {
     // className is deprecated and will be removed in favor of clazz.
@@ -211,16 +215,24 @@ typedef NS_OPTIONS(uint32_t, GPBDescriptorInitializationFlags) {
                                  fields:(void *)fieldDescriptions
                              fieldCount:(uint32_t)fieldCount
                             storageSize:(uint32_t)storageSize
-                                  flags:(GPBDescriptorInitializationFlags)flags;
+                                  flags:(GPBDescriptorInitializationFlags)flags
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
 + (instancetype)allocDescriptorForClass:(Class)messageClass
                               rootClass:(Class)rootClass
                                    file:(GPBFileDescriptor *)file
                                  fields:(void *)fieldDescriptions
                              fieldCount:(uint32_t)fieldCount
                             storageSize:(uint32_t)storageSize
-                                  flags:(GPBDescriptorInitializationFlags)flags;
-- (void)setupContainingMessageClassName:(const char *)msgClassName;
-- (void)setupMessageClassNameSuffix:(NSString *)suffix;
+                                  flags:(GPBDescriptorInitializationFlags)flags
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
+- (void)setupContainingMessageClassName:(const char *)msgClassName
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
+- (void)setupMessageClassNameSuffix:(NSString *)suffix
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
 
 @end
 
@@ -235,7 +247,6 @@ typedef NS_OPTIONS(uint32_t, GPBDescriptorInitializationFlags) {
  @package
   const char *name_;
   NSArray *fields_;
-  SEL caseSel_;
 }
 // name must be long lived.
 - (instancetype)initWithName:(const char *)name fields:(NSArray *)fields;
@@ -245,11 +256,6 @@ typedef NS_OPTIONS(uint32_t, GPBDescriptorInitializationFlags) {
  @package
   GPBMessageFieldDescription *description_;
   GPB_UNSAFE_UNRETAINED GPBOneofDescriptor *containingOneof_;
-
-  SEL getSel_;
-  SEL setSel_;
-  SEL hasOrCountSel_;  // *Count for map<>/repeated fields, has* otherwise.
-  SEL setHasSel_;
 }
 @end
 
@@ -284,13 +290,17 @@ typedef NS_OPTIONS(uint32_t, GPBEnumDescriptorInitializationFlags) {
                             valueNames:(const char *)valueNames
                                 values:(const int32_t *)values
                                  count:(uint32_t)valueCount
-                          enumVerifier:(GPBEnumValidationFunc)enumVerifier;
+                          enumVerifier:(GPBEnumValidationFunc)enumVerifier
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
 + (instancetype)allocDescriptorForName:(NSString *)name
                             valueNames:(const char *)valueNames
                                 values:(const int32_t *)values
                                  count:(uint32_t)valueCount
                           enumVerifier:(GPBEnumValidationFunc)enumVerifier
-                   extraTextFormatInfo:(const char *)extraTextFormatInfo;
+                   extraTextFormatInfo:(const char *)extraTextFormatInfo
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
 @end
 
 @interface GPBExtensionDescriptor () {
@@ -309,7 +319,9 @@ typedef NS_OPTIONS(uint32_t, GPBEnumDescriptorInitializationFlags) {
 - (instancetype)initWithExtensionDescription:(GPBExtensionDescription *)desc
                                usesClassRefs:(BOOL)usesClassRefs;
 // Deprecated. Calls above with `usesClassRefs = NO`
-- (instancetype)initWithExtensionDescription:(GPBExtensionDescription *)desc;
+- (instancetype)initWithExtensionDescription:(GPBExtensionDescription *)desc
+    __attribute__((deprecated("Please use a newer version of protoc to regenerate your sources. "
+                              "Support for this version will go away in the future.")));
 
 - (NSComparisonResult)compareByFieldNumber:(GPBExtensionDescriptor *)other;
 @end

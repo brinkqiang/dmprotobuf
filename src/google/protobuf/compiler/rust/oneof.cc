@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -16,6 +17,8 @@
 #include "google/protobuf/compiler/rust/accessors/accessor_case.h"
 #include "google/protobuf/compiler/rust/context.h"
 #include "google/protobuf/compiler/rust/naming.h"
+#include "google/protobuf/compiler/rust/rust_field_type.h"
+#include "google/protobuf/compiler/rust/upb_helpers.h"
 #include "google/protobuf/descriptor.h"
 
 namespace google {
@@ -23,17 +26,12 @@ namespace protobuf {
 namespace compiler {
 namespace rust {
 
-// We emit three Rust enums:
+// For each oneof we emit two Rust enums with corresponding accessors:
 // -  An enum acting as a tagged union that has each case holds a View<> of
 //    each of the cases. Named as the one_of name in CamelCase.
-// -  An enum acting as a tagged union that has each case holds a Mut<> of
-//    each of the cases. Named as one_of name in CamelCase with "Mut" appended.
-//    [TODO: Mut not implemented yet].
-// -  A simple enum whose cases have int values matching the cpp or upb's
-//    case enum. Named as the one_of camelcase with "Case" appended.
-// All three contain cases matching the fields in the oneof CamelCased.
-// The first and second are exposed in the API, the third is internal and
-// used for interop with the Kernels in the generation of the other two.
+// -  A simple 'which oneof field is set' enum which directly maps to the
+//    underlying enum used for the 'cases' accessor in C++ or upb. Named as the
+//    one_of camelcase with "Case" appended.
 //
 // Example:
 // For this oneof:
@@ -45,29 +43,31 @@ namespace rust {
 // }
 //
 // This will emit as the exposed API:
-// pub mod SomeMsg_ {
-//   // The 'view' struct (no suffix on the name)
+// pub mod some_msg {
 //   pub enum SomeOneof<'msg> {
 //     FieldA(i32) = 7,
 //     FieldB(View<'msg, SomeMsg>) = 9,
 //     not_set(std::marker::PhantomData<&'msg ()>) = 0
 //   }
-//   pub enum SomeOneofMut<'msg> {
-//     FieldA(Mut<'msg, i32>) = 7,
-//     FieldB(Mut<'msg, SomeMsg>) = 9,
-//     not_set(std::marker::PhantomData<&'msg ()>) = 0
+//
+//   #[repr(C)]
+//   pub enum SomeOneofCase {
+//     FieldA = 7,
+//     FieldB = 9,
+//     not_set = 0
 //   }
 // }
 // impl SomeMsg {
 //   pub fn some_oneof(&self) -> SomeOneof {...}
-//   pub fn some_oneof_mut(&mut self) -> SomeOneofMut {...}
+//   pub fn some_oneof_case(&self) -> SomeOneofCase {...}
 // }
 // impl SomeMsgMut {
 //   pub fn some_oneof(&self) -> SomeOneof {...}
-//   pub fn some_oneof_mut(&mut self) -> SomeOneofMut {...}
+//   pub fn some_oneof_case(&self) -> SomeOneofCase {...}
 // }
 // impl SomeMsgView {
-//   pub fn some_oneof(&self) -> SomeOneof {...}
+//   pub fn some_oneof(self) -> SomeOneof {...}
+//   pub fn some_oneof_case(self) -> SomeOneofCase {...}
 // }
 //
 // An additional "Case" enum which just reflects the corresponding slot numbers
@@ -86,84 +86,23 @@ std::string RsTypeNameView(Context& ctx, const FieldDescriptor& field) {
   if (field.options().has_ctype()) {
     return "";  // TODO: b/308792377 - ctype fields not supported yet.
   }
-  switch (field.type()) {
-    case FieldDescriptor::TYPE_INT32:
-    case FieldDescriptor::TYPE_INT64:
-    case FieldDescriptor::TYPE_FIXED32:
-    case FieldDescriptor::TYPE_FIXED64:
-    case FieldDescriptor::TYPE_SFIXED32:
-    case FieldDescriptor::TYPE_SFIXED64:
-    case FieldDescriptor::TYPE_SINT32:
-    case FieldDescriptor::TYPE_SINT64:
-    case FieldDescriptor::TYPE_UINT32:
-    case FieldDescriptor::TYPE_UINT64:
-    case FieldDescriptor::TYPE_FLOAT:
-    case FieldDescriptor::TYPE_DOUBLE:
-    case FieldDescriptor::TYPE_BOOL:
+  switch (GetRustFieldType(field.type())) {
+    case RustFieldType::INT32:
+    case RustFieldType::INT64:
+    case RustFieldType::UINT32:
+    case RustFieldType::UINT64:
+    case RustFieldType::FLOAT:
+    case RustFieldType::DOUBLE:
+    case RustFieldType::BOOL:
       return RsTypePath(ctx, field);
-    case FieldDescriptor::TYPE_BYTES:
+    case RustFieldType::BYTES:
       return "&'msg [u8]";
-    case FieldDescriptor::TYPE_STRING:
+    case RustFieldType::STRING:
       return "&'msg ::__pb::ProtoStr";
-    case FieldDescriptor::TYPE_MESSAGE:
-      // TODO: support messages which are defined in other crates.
-      if (!IsInCurrentlyGeneratingCrate(ctx, *field.message_type())) {
-        return "";
-      }
+    case RustFieldType::MESSAGE:
       return absl::StrCat("::__pb::View<'msg, ", RsTypePath(ctx, field), ">");
-    case FieldDescriptor::TYPE_ENUM:
-      // TODO: support enums which are defined in other crates.
-      if (!IsInCurrentlyGeneratingCrate(ctx, *field.enum_type())) {
-        return "";
-      }
+    case RustFieldType::ENUM:
       return absl::StrCat("::__pb::View<'msg, ", RsTypePath(ctx, field), ">");
-    case FieldDescriptor::TYPE_GROUP:  // Not supported yet.
-      return "";
-  }
-
-  ABSL_LOG(FATAL) << "Unexpected field type: " << field.type_name();
-  return "";
-}
-
-// A user-friendly rust type for a mutator of this field with lifetime 'msg.
-std::string RsTypeNameMut(Context& ctx, const FieldDescriptor& field) {
-  if (field.options().has_ctype()) {
-    return "";  // TODO: b/308792377 - ctype fields not supported yet.
-  }
-  switch (field.type()) {
-    case FieldDescriptor::TYPE_INT32:
-    case FieldDescriptor::TYPE_INT64:
-    case FieldDescriptor::TYPE_FIXED32:
-    case FieldDescriptor::TYPE_FIXED64:
-    case FieldDescriptor::TYPE_SFIXED32:
-    case FieldDescriptor::TYPE_SFIXED64:
-    case FieldDescriptor::TYPE_SINT32:
-    case FieldDescriptor::TYPE_SINT64:
-    case FieldDescriptor::TYPE_UINT32:
-    case FieldDescriptor::TYPE_UINT64:
-    case FieldDescriptor::TYPE_FLOAT:
-    case FieldDescriptor::TYPE_DOUBLE:
-    case FieldDescriptor::TYPE_BOOL:
-      return absl::StrCat("::__pb::PrimitiveMut<'msg, ", RsTypePath(ctx, field),
-                          ">");
-    case FieldDescriptor::TYPE_BYTES:
-      return "::__pb::BytesMut<'msg>";
-    case FieldDescriptor::TYPE_STRING:
-      return "::__pb::ProtoStrMut<'msg>";
-    case FieldDescriptor::TYPE_MESSAGE:
-      // TODO: support messages which are defined in other crates.
-      if (!IsInCurrentlyGeneratingCrate(ctx, *field.message_type())) {
-        return "";
-      }
-      return absl::StrCat("::__pb::Mut<'msg, ", RsTypePath(ctx, field), ">");
-    case FieldDescriptor::TYPE_ENUM:
-      // TODO: support enums which are defined in other crates.
-      if (!IsInCurrentlyGeneratingCrate(ctx, *field.enum_type())) {
-        return "";
-      }
-      return absl::StrCat("::__pb::Mut<'msg, ", RsTypePath(ctx, field), ">");
-    case FieldDescriptor::TYPE_GROUP:  // Not supported yet.
-      return "";
   }
 
   ABSL_LOG(FATAL) << "Unexpected field type: " << field.type_name();
@@ -174,45 +113,33 @@ std::string RsTypeNameMut(Context& ctx, const FieldDescriptor& field) {
 
 void GenerateOneofDefinition(Context& ctx, const OneofDescriptor& oneof) {
   ctx.Emit(
-      {{"view_enum_name", OneofViewEnumRsName(oneof)},
-       {"mut_enum_name", OneofMutEnumRsName(oneof)},
-       {"view_fields",
-        [&] {
-          for (int i = 0; i < oneof.field_count(); ++i) {
-            auto& field = *oneof.field(i);
-            std::string rs_type = RsTypeNameView(ctx, field);
-            if (rs_type.empty()) {
-              continue;
-            }
-            ctx.Emit({{"name", OneofCaseRsName(field)},
-                      {"type", rs_type},
-                      {"number", std::to_string(field.number())}},
-                     R"rs($name$($type$) = $number$,
+      {
+          {"view_enum_name", OneofViewEnumRsName(oneof)},
+          {"view_fields",
+           [&] {
+             for (int i = 0; i < oneof.field_count(); ++i) {
+               auto& field = *oneof.field(i);
+               std::string rs_type = RsTypeNameView(ctx, field);
+               if (rs_type.empty()) {
+                 continue;
+               }
+               ctx.Emit({{"name", OneofCaseRsName(field)},
+                         {"type", rs_type},
+                         {"number", std::to_string(field.number())}},
+                        R"rs($name$($type$) = $number$,
                 )rs");
-          }
-        }},
-       {"mut_fields",
-        [&] {
-          for (int i = 0; i < oneof.field_count(); ++i) {
-            auto& field = *oneof.field(i);
-            std::string rs_type = RsTypeNameMut(ctx, field);
-            if (rs_type.empty()) {
-              continue;
-            }
-            ctx.Emit({{"name", OneofCaseRsName(field)},
-                      {"type", rs_type},
-                      {"number", std::to_string(field.number())}},
-                     R"rs($name$($type$) = $number$,
-                )rs");
-          }
-        }}},
+             }
+           }},
+      },
       // TODO: Revisit if isize is the optimal repr for this enum.
-      // TODO: not_set currently has phantom data just to avoid the
-      // lifetime on the enum breaking compilation if there are zero supported
-      // fields on it (e.g. if the oneof only has Messages inside).
+      // Note: This enum deliberately has a 'msg lifetime associated with it
+      // even if all fields were scalars; we could conditionally exclude the
+      // lifetime under that case, but it would mean changing the .proto file
+      // to add an additional string or message-typed field to the oneof would
+      // be a more breaking change than it needs to be.
       R"rs(
       #[non_exhaustive]
-      #[derive(Debug)]
+      #[derive(Debug, Clone, Copy)]
       #[allow(dead_code)]
       #[repr(isize)]
       pub enum $view_enum_name$<'msg> {
@@ -221,18 +148,6 @@ void GenerateOneofDefinition(Context& ctx, const OneofDescriptor& oneof) {
         #[allow(non_camel_case_types)]
         not_set(std::marker::PhantomData<&'msg ()>) = 0
       }
-
-      #[non_exhaustive]
-      #[derive(Debug)]
-      #[allow(dead_code)]
-      #[repr(isize)]
-      pub enum $mut_enum_name$<'msg> {
-        $mut_fields$
-
-        #[allow(non_camel_case_types)]
-        not_set(std::marker::PhantomData<&'msg ()>) = 0
-      }
-
       )rs");
 
   // Note: This enum is used as the Thunk return type for getting which case is
@@ -245,18 +160,41 @@ void GenerateOneofDefinition(Context& ctx, const OneofDescriptor& oneof) {
                  ctx.Emit({{"name", OneofCaseRsName(field)},
                            {"number", std::to_string(field.number())}},
                           R"rs($name$ = $number$,
-                )rs");
+                          )rs");
+               }
+             }},
+            {"try_from_cases",
+             [&] {
+               for (int i = 0; i < oneof.field_count(); ++i) {
+                 auto& field = *oneof.field(i);
+                 ctx.Emit({{"name", OneofCaseRsName(field)},
+                           {"number", std::to_string(field.number())}},
+                          R"rs($number$ => Some($case_enum_name$::$name$),
+                          )rs");
                }
              }}},
            R"rs(
       #[repr(C)]
       #[derive(Debug, Copy, Clone, PartialEq, Eq)]
       #[allow(dead_code)]
-      pub(super) enum $case_enum_name$ {
+      pub enum $case_enum_name$ {
         $cases$
 
         #[allow(non_camel_case_types)]
         not_set = 0
+      }
+
+      impl $case_enum_name$ {
+        //~ This try_from is not a TryFrom impl so that it isn't
+        //~ committed to as part of our public api.
+        #[allow(dead_code)]
+        pub(crate) fn try_from(v: u32) -> $Option$<$case_enum_name$> {
+          match v {
+            0 => Some($case_enum_name$::not_set),
+            $try_from_cases$
+            _ => None
+          }
+        }
       }
 
       )rs");
@@ -266,8 +204,12 @@ void GenerateOneofAccessors(Context& ctx, const OneofDescriptor& oneof,
                             AccessorCase accessor_case) {
   ctx.Emit(
       {{"oneof_name", RsSafeName(oneof.name())},
+       {"view_lifetime", ViewLifetime(accessor_case)},
+       {"self", ViewReceiver(accessor_case)},
+       {"oneof_enum_module",
+        absl::StrCat("crate::", RustModuleForContainingType(
+                                    ctx, oneof.containing_type()))},
        {"view_enum_name", OneofViewEnumRsName(oneof)},
-       {"mut_enum_name", OneofMutEnumRsName(oneof)},
        {"case_enum_name", OneofCaseEnumRsName(oneof)},
        {"view_cases",
         [&] {
@@ -277,100 +219,76 @@ void GenerateOneofAccessors(Context& ctx, const OneofDescriptor& oneof,
             if (rs_type.empty()) {
               continue;
             }
+            std::string field_name = FieldNameWithCollisionAvoidance(field);
             ctx.Emit(
                 {
                     {"case", OneofCaseRsName(field)},
-                    {"rs_getter", RsSafeName(field.name())},
+                    {"rs_getter", RsSafeName(field_name)},
                     {"type", rs_type},
                 },
                 R"rs(
-                $Msg$_::$case_enum_name$::$case$ =>
-                    $Msg$_::$view_enum_name$::$case$(self.$rs_getter$()),
+                $oneof_enum_module$$case_enum_name$::$case$ =>
+                    $oneof_enum_module$$view_enum_name$::$case$(self.$rs_getter$()),
                 )rs");
           }
         }},
-       {"mut_cases",
+       {"oneof_case_body",
         [&] {
-          for (int i = 0; i < oneof.field_count(); ++i) {
-            auto& field = *oneof.field(i);
-            std::string rs_type = RsTypeNameMut(ctx, field);
-            if (rs_type.empty()) {
-              continue;
-            }
+          if (ctx.is_cpp()) {
+            ctx.Emit({{"case_thunk", ThunkName(ctx, oneof, "case")}},
+                     "unsafe { $case_thunk$(self.raw_msg()) }");
+          } else {
             ctx.Emit(
-                {{"case", OneofCaseRsName(field)},
-                 {"rs_mut_getter", field.name() + "_mut"},
-                 {"type", rs_type},
-
-                 // Any extra behavior needed to map the mut getter into the
-                 // unwrapped Mut<>. Right now Message's _mut already returns
-                 // the Mut directly, but for scalars the accessor will return
-                 // an Optional which we then grab the mut by doing
-                 // .try_into_mut().unwrap().
-                 //
-                 // Note that this unwrap() is safe because the flow is:
-                 // 1) Find out which oneof field is already set (if any)
-                 // 2) If a field is set, call the corresponding field's _mut()
-                 // and wrap the result in the SomeOneofMut enum.
-                 // The unwrap() will only ever panic if the which oneof enum
-                 // disagrees with the corresponding field presence which.
-                 // TODO: If the message _mut accessor returns
-                 // Optional<> then this conditional behavior should be removed.
-                 {"into_mut_transform",
-                  field.type() == FieldDescriptor::TYPE_MESSAGE
-                      ? ""
-                      : ".try_into_mut().unwrap()"}},
+                // The field index for an arbitrary field that in the oneof.
+                {{"upb_mt_field_index",
+                  UpbMiniTableFieldIndex(*oneof.field(0))}},
                 R"rs(
-                $Msg$_::$case_enum_name$::$case$ =>
-                    $Msg$_::$mut_enum_name$::$case$(
-                        self.$rs_mut_getter$()$into_mut_transform$),
-               )rs");
+                let field_num = unsafe {
+                  let f = $pbr$::upb_MiniTable_GetFieldByIndex(
+                      <Self as $pbr$::AssociatedMiniTable>::mini_table(),
+                      $upb_mt_field_index$);
+                  $pbr$::upb_Message_WhichOneofFieldNumber(
+                        self.raw_msg(), f)
+                };
+                unsafe {
+                  $oneof_enum_module$$case_enum_name$::try_from(field_num).unwrap_unchecked()
+                }
+              )rs");
           }
-        }},
-       {"case_thunk", ThunkName(ctx, oneof, "case")},
-       {"getter",
-        [&] {
-          ctx.Emit({}, R"rs(
-          pub fn $oneof_name$(&self) -> $Msg$_::$view_enum_name$ {
-            match unsafe { $case_thunk$(self.raw_msg()) } {
-              $view_cases$
-              _ => $Msg$_::$view_enum_name$::not_set(std::marker::PhantomData)
-            }
-          }
-          )rs");
-        }},
-       {"getter_mut",
-        [&] {
-          if (accessor_case == AccessorCase::VIEW) {
-            return;
-          }
-          ctx.Emit({}, R"rs(
-          pub fn $oneof_name$_mut(&mut self) -> $Msg$_::$mut_enum_name$ {
-          match unsafe { $case_thunk$(self.raw_msg()) } {
-            $mut_cases$
-            _ => $Msg$_::$mut_enum_name$::not_set(std::marker::PhantomData)
-          }
-        }
-        )rs");
         }}},
       R"rs(
-        $getter$
-        $getter_mut$
+        pub fn $oneof_name$($self$) -> $oneof_enum_module$$view_enum_name$<$view_lifetime$> {
+          match $self$.$oneof_name$_case() {
+            $view_cases$
+            _ => $oneof_enum_module$$view_enum_name$::not_set(std::marker::PhantomData)
+          }
+        }
+
+        pub fn $oneof_name$_case($self$) -> $oneof_enum_module$$case_enum_name$ {
+          $oneof_case_body$
+        }
       )rs");
 }
 
 void GenerateOneofExternC(Context& ctx, const OneofDescriptor& oneof) {
+  ABSL_CHECK(ctx.is_cpp());
+
   ctx.Emit(
       {
+          {"oneof_enum_module",
+           absl::StrCat("crate::", RustModuleForContainingType(
+                                       ctx, oneof.containing_type()))},
           {"case_enum_rs_name", OneofCaseEnumRsName(oneof)},
           {"case_thunk", ThunkName(ctx, oneof, "case")},
       },
       R"rs(
-        fn $case_thunk$(raw_msg: $pbi$::RawMessage) -> $Msg$_::$case_enum_rs_name$;
+        fn $case_thunk$(raw_msg: $pbr$::RawMessage) -> $oneof_enum_module$$case_enum_rs_name$;
       )rs");
 }
 
 void GenerateOneofThunkCc(Context& ctx, const OneofDescriptor& oneof) {
+  ABSL_CHECK(ctx.is_cpp());
+
   ctx.Emit(
       {
           {"oneof_name", oneof.name()},

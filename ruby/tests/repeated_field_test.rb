@@ -22,9 +22,9 @@ class RepeatedFieldTest < Test::Unit::TestCase
     arr_methods -= [ :indices, :iter_for_each, :iter_for_each_index,
       :iter_for_each_with_index, :dimensions, :copy_data, :copy_data_simple,
       :nitems, :iter_for_reverse_each, :indexes, :append, :prepend]
-    arr_methods -= [:union, :difference, :filter!]
+    arr_methods -= [:filter!]
     # ruby 2.7 methods we can ignore
-    arr_methods -= [:intersection, :deconstruct, :resolve_feature_path]
+    arr_methods -= [:deconstruct, :resolve_feature_path]
     # ruby 3.1 methods we can ignore
     arr_methods -= [:intersect?]
     arr_methods.each do |method_name|
@@ -37,7 +37,6 @@ class RepeatedFieldTest < Test::Unit::TestCase
     repeated_field_names(TestMessage).each do |field_name|
       assert_nil m.send(field_name).first
       assert_empty m.send(field_name).first(0)
-      assert_empty m.send(field_name).first(1)
     end
 
     fill_test_msg(m)
@@ -216,28 +215,16 @@ class RepeatedFieldTest < Test::Unit::TestCase
       arr[-5..-1]
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
-      # Infinite range; introduce in Ruby 2.7.
-      if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.7')
-        eval "arr[0..]"
-      end
+      eval "arr[0..]"
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
-      # Beginless range; introduced in Ruby 2.7.
-      if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.7')
-        eval "arr[..-1]"
-      end
+      eval "arr[..-1]"
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
-      # Infinite range; introduce in Ruby 2.7.
-      if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.7')
-        eval "arr[0...]" # Exclusive range
-      end
+      eval "arr[0...]" # Exclusive range
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
-      # Beginless range; introduced in Ruby 2.7.
-      if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.7')
-        eval "arr[...-1]" # Exclusive range
-      end
+      eval "arr[...-1]" # Exclusive range
     end
     check_self_modifying_method(m.repeated_string, reference_arr) do |arr|
       arr[-1, 1]

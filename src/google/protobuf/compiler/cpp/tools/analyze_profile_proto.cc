@@ -10,8 +10,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <iostream>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +24,7 @@
 #include "google/protobuf/compiler/access_info_map.h"
 #include "google/protobuf/compiler/split_map.h"
 #include "google/protobuf/compiler/profile_bootstrap.pb.h"
+#include "google/protobuf/descriptor.pb.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -37,7 +38,6 @@
 #include "google/protobuf/compiler/cpp/helpers.h"
 #include "google/protobuf/compiler/cpp/options.h"
 #include "google/protobuf/descriptor.h"
-#include "google/protobuf/descriptor.pb.h"
 #include "third_party/re2/re2.h"
 
 namespace google {

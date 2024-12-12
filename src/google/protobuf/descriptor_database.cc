@@ -881,8 +881,9 @@ EncodedDescriptorDatabase::~EncodedDescriptorDatabase() {
 
 // ===================================================================
 
-DescriptorPoolDatabase::DescriptorPoolDatabase(const DescriptorPool& pool)
-    : pool_(pool) {}
+DescriptorPoolDatabase::DescriptorPoolDatabase(
+    const DescriptorPool& pool, DescriptorPoolDatabaseOptions options)
+    : pool_(pool), options_(std::move(options)) {}
 DescriptorPoolDatabase::~DescriptorPoolDatabase() {}
 
 bool DescriptorPoolDatabase::FindFileByName(const std::string& filename,
@@ -891,6 +892,9 @@ bool DescriptorPoolDatabase::FindFileByName(const std::string& filename,
   if (file == nullptr) return false;
   output->Clear();
   file->CopyTo(output);
+  if (options_.preserve_source_code_info) {
+    file->CopySourceCodeInfoTo(output);
+  }
   return true;
 }
 
@@ -900,6 +904,9 @@ bool DescriptorPoolDatabase::FindFileContainingSymbol(
   if (file == nullptr) return false;
   output->Clear();
   file->CopyTo(output);
+  if (options_.preserve_source_code_info) {
+    file->CopySourceCodeInfoTo(output);
+  }
   return true;
 }
 
@@ -915,6 +922,9 @@ bool DescriptorPoolDatabase::FindFileContainingExtension(
 
   output->Clear();
   extension->file()->CopyTo(output);
+  if (options_.preserve_source_code_info) {
+    extension->file()->CopySourceCodeInfoTo(output);
+  }
   return true;
 }
 
@@ -1024,8 +1034,8 @@ bool MergedDescriptorDatabase::FindAllFileNames(
     std::vector<std::string> source_output;
     if (source->FindAllFileNames(&source_output)) {
       output->reserve(output->size() + source_output.size());
-      for (auto& source : source_output) {
-        output->push_back(std::move(source));
+      for (auto& source_out : source_output) {
+        output->push_back(std::move(source_out));
       }
       implemented = true;
     }

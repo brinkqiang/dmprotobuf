@@ -15,6 +15,7 @@
 #include <iterator>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -23,13 +24,15 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
+#include "absl/types/span.h"
 #include "google/protobuf/compiler/code_generator.h"
 #include "google/protobuf/compiler/cpp/names.h"
 #include "google/protobuf/compiler/cpp/options.h"
 #include "google/protobuf/compiler/scc.h"
+#include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
+#include "google/protobuf/generated_message_tctable_impl.h"
 #include "google/protobuf/io/printer.h"
-#include "google/protobuf/port.h"
 
 
 // Must be included last.
@@ -47,11 +50,6 @@ inline absl::string_view ProtobufNamespace(const Options& opts) {
   constexpr absl::string_view kOssNs = "google::protobuf";
 
   return opts.opensource_runtime ? kOssNs : kGoogle3Ns;
-}
-
-inline std::string MacroPrefix(const Options& options) {
-  // Constants are different in the internal and external version.
-  return options.opensource_runtime ? "GOOGLE_PROTOBUF" : "GOOGLE_PROTOBUF";
 }
 
 inline std::string DeprecatedAttribute(const Options&,
@@ -382,8 +380,20 @@ bool IsLazy(const FieldDescriptor* field, const Options& options,
 // Is this an explicit (non-profile driven) lazy field, as denoted by
 // lazy/unverified_lazy in the descriptor?
 inline bool IsExplicitLazy(const FieldDescriptor* field) {
+  if (field->is_map() || field->is_repeated()) {
+    return false;
+  }
+
+  if (field->cpp_type() != FieldDescriptor::CPPTYPE_MESSAGE) {
+    return false;
+  }
+
   return field->options().lazy() || field->options().unverified_lazy();
 }
+
+internal::field_layout::TransformValidation GetLazyStyle(
+    const FieldDescriptor* field, const Options& options,
+    MessageSCCAnalyzer* scc_analyzer);
 
 bool IsEagerlyVerifiedLazy(const FieldDescriptor* field, const Options& options,
                            MessageSCCAnalyzer* scc_analyzer);
@@ -457,6 +467,12 @@ bool HasMapFields(const FileDescriptor* file);
 // Does this file have any enum type definitions?
 bool HasEnumDefinitions(const FileDescriptor* file);
 
+// Returns true if a message in the file can have v2 table.
+bool HasV2Table(const FileDescriptor* file);
+
+// Returns true if a message (descriptor) can have v2 table.
+bool HasV2Table(const Descriptor* descriptor);
+
 // Does this file have generated parsing, serialization, and other
 // standard methods for which reflection-based fallback implementations exist?
 inline bool HasGeneratedMethods(const FileDescriptor* file,
@@ -498,7 +514,7 @@ std::string UnderscoresToCamelCase(absl::string_view input,
                                    bool cap_next_letter);
 
 inline bool IsCrossFileMessage(const FieldDescriptor* field) {
-  return field->type() == FieldDescriptor::TYPE_MESSAGE &&
+  return field->cpp_type() == FieldDescriptor::CPPTYPE_MESSAGE &&
          field->message_type()->file() != field->file();
 }
 
@@ -549,7 +565,7 @@ inline std::string MakeVarintCachedSizeFieldName(const FieldDescriptor* field,
 bool IsAnyMessage(const FileDescriptor* descriptor);
 bool IsAnyMessage(const Descriptor* descriptor);
 
-bool IsWellKnownMessage(const FileDescriptor* descriptor);
+bool IsWellKnownMessage(const FileDescriptor* file);
 
 enum class GeneratedFileType : int { kPbH, kProtoH, kProtoStaticReflectionH };
 
@@ -569,25 +585,7 @@ inline std::string IncludeGuard(const FileDescriptor* file,
     case GeneratedFileType::kProtoStaticReflectionH:
       extension = ".proto.static_reflection.h";
   }
-  std::string filename_identifier =
-      FilenameIdentifier(file->name() + extension);
-
-  if (IsWellKnownMessage(file)) {
-    // For well-known messages we need third_party/protobuf and net/proto2 to
-    // have distinct include guards, because some source files include both and
-    // both need to be defined (the third_party copies will be in the
-    // google::protobuf_opensource namespace).
-    return absl::StrCat(MacroPrefix(options), "_INCLUDED_",
-                        filename_identifier);
-  } else {
-    // Ideally this case would use distinct include guards for opensource and
-    // google3 protos also.  (The behavior of "first #included wins" is not
-    // ideal).  But unfortunately some legacy code includes both and depends on
-    // the identical include guards to avoid compile errors.
-    //
-    // We should clean this up so that this case can be removed.
-    return absl::StrCat("GOOGLE_PROTOBUF_INCLUDED_", filename_identifier);
-  }
+  return FilenameIdentifier(absl::StrCat(file->name(), extension));
 }
 
 // Returns the OptimizeMode for this file, furthermore it updates a status
@@ -632,21 +630,8 @@ inline std::vector<const Descriptor*> FlattenMessagesInFile(
 std::vector<const Descriptor*> TopologicalSortMessagesInFile(
     const FileDescriptor* file, MessageSCCAnalyzer& scc_analyzer);
 
-template <typename F>
-void ForEachMessage(const Descriptor* descriptor, F&& func) {
-  for (int i = 0; i < descriptor->nested_type_count(); i++)
-    ForEachMessage(descriptor->nested_type(i), std::forward<F&&>(func));
-  func(descriptor);
-}
-
-template <typename F>
-void ForEachMessage(const FileDescriptor* descriptor, F&& func) {
-  for (int i = 0; i < descriptor->message_type_count(); i++)
-    ForEachMessage(descriptor->message_type(i), std::forward<F&&>(func));
-}
-
 bool HasWeakFields(const Descriptor* desc, const Options& options);
-bool HasWeakFields(const FileDescriptor* desc, const Options& options);
+bool HasWeakFields(const FileDescriptor* file, const Options& options);
 
 // Returns true if the "required" restriction check should be ignored for the
 // given field.
@@ -708,10 +693,12 @@ void ListAllFields(const Descriptor* d,
 void ListAllFields(const FileDescriptor* d,
                    std::vector<const FieldDescriptor*>* fields);
 
-template <class T>
+template <bool do_nested_types, class T>
 void ForEachField(const Descriptor* d, T&& func) {
-  for (int i = 0; i < d->nested_type_count(); i++) {
-    ForEachField(d->nested_type(i), std::forward<T&&>(func));
+  if (do_nested_types) {
+    for (int i = 0; i < d->nested_type_count(); i++) {
+      ForEachField<true>(d->nested_type(i), std::forward<T&&>(func));
+    }
   }
   for (int i = 0; i < d->extension_count(); i++) {
     func(d->extension(i));
@@ -724,7 +711,7 @@ void ForEachField(const Descriptor* d, T&& func) {
 template <class T>
 void ForEachField(const FileDescriptor* d, T&& func) {
   for (int i = 0; i < d->message_type_count(); i++) {
-    ForEachField(d->message_type(i), std::forward<T&&>(func));
+    ForEachField<true>(d->message_type(i), std::forward<T&&>(func));
   }
   for (int i = 0; i < d->extension_count(); i++) {
     func(d->extension(i));
@@ -785,16 +772,32 @@ void ListAllTypesForServices(const FileDescriptor* fd,
 // missing to insert in the extension table in ExtensionSet.
 //
 // For services, the TU unconditionally pins the request/response objects.
-// This is the status quo for simplicitly to avoid modifying the RPC layer. It
+// This is the status quo for simplicity to avoid modifying the RPC layer. It
 // might be improved in the future.
 bool UsingImplicitWeakDescriptor(const FileDescriptor* file,
                                  const Options& options);
 
+// Generates a strong reference to the message in `desc`, as a statement.
+std::string StrongReferenceToType(const Descriptor* desc,
+                                  const Options& options);
+
+// Generates the section name to be used for a data object when using implicit
+// weak descriptors. The prefix determines the kind of object and the section it
+// will be merged into afterwards.
+// See `UsingImplicitWeakDescriptor` above.
+std::string WeakDescriptorDataSection(absl::string_view prefix,
+                                      const Descriptor* descriptor,
+                                      int index_in_file_messages,
+                                      const Options& options);
+
 // Section name to be used for the default instance for implicit weak descriptor
 // objects. See `UsingImplicitWeakDescriptor` above.
-std::string WeakDefaultInstanceSection(const Descriptor* descriptor,
-                                       int index_in_file_messages,
-                                       const Options& options);
+inline std::string WeakDefaultInstanceSection(const Descriptor* descriptor,
+                                              int index_in_file_messages,
+                                              const Options& options) {
+  return WeakDescriptorDataSection("def", descriptor, index_in_file_messages,
+                                   options);
+}
 
 // Indicates whether we should use implicit weak fields for this file.
 bool UsingImplicitWeakFields(const FileDescriptor* file,
@@ -828,18 +831,18 @@ inline bool HasSimpleBaseClass(const Descriptor* desc, const Options& options) {
 
 inline bool HasSimpleBaseClasses(const FileDescriptor* file,
                                  const Options& options) {
-  bool v = false;
-  ForEachMessage(file, [&v, &options](const Descriptor* desc) {
-    v |= HasSimpleBaseClass(desc, options);
-  });
-  return v;
+  return internal::cpp::VisitDescriptorsInFileOrder(
+      file, [&](const Descriptor* desc) {
+        return HasSimpleBaseClass(desc, options);
+      });
 }
 
 // Returns true if this message has a _tracker_ field.
 inline bool HasTracker(const Descriptor* desc, const Options& options) {
   return options.field_listener_options.inject_field_listener_events &&
          desc->file()->options().optimize_for() !=
-             google::protobuf::FileOptions::LITE_RUNTIME;
+             google::protobuf::FileOptions::LITE_RUNTIME &&
+         !IsMapEntryMessage(desc);
 }
 
 // Returns true if this message needs an Impl_ struct for it's data.
@@ -1004,7 +1007,7 @@ class PROTOC_EXPORT Formatter {
 template <typename T>
 std::string FieldComment(const T* field, const Options& options) {
   if (options.strip_nonfunctional_codegen) {
-    return field->name();
+    return std::string(field->name());
   }
   // Print the field's (or oneof's) proto-syntax definition as a comment.
   // We don't want to print group bodies so we cut off after the first
@@ -1149,6 +1152,26 @@ bool IsFileDescriptorProto(const FileDescriptor* file, const Options& options);
 // Some descriptors, like some map entries, are not represented as a generated
 // class.
 bool ShouldGenerateClass(const Descriptor* descriptor, const Options& options);
+
+
+// Determine if we are going to generate a tracker call for OnDeserialize.
+// This one is handled specially because we generate the PostLoopHandler for it.
+// We don't want to generate a handler if it is going to end up empty.
+bool HasOnDeserializeTracker(const Descriptor* descriptor,
+                             const Options& options);
+
+// Determine if we need a PostLoopHandler function to inject into TcParseTable's
+// ParseLoop.
+// If this returns true, the parse table generation will use
+// `&ClassName::PostLoopHandler` which should be a static function of the right
+// signature.
+bool NeedsPostLoopHandler(const Descriptor* descriptor, const Options& options);
+
+// Priority used for static initializers.
+enum InitPriority {
+  kInitPriority101,
+  kInitPriority102,
+};
 
 }  // namespace cpp
 }  // namespace compiler

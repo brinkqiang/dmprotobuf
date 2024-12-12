@@ -184,6 +184,9 @@ class PROTOBUF_EXPORT TaggedStringPtr {
 
  private:
   static inline void assert_aligned(const void* p) {
+    static_assert(kMask <= alignof(void*), "Pointer underaligned for bit mask");
+    static_assert(kMask <= alignof(std::string),
+                  "std::string underaligned for bit mask");
     ABSL_DCHECK_EQ(reinterpret_cast<uintptr_t>(p) & kMask, 0UL);
   }
 
@@ -237,7 +240,7 @@ struct PROTOBUF_EXPORT ArenaStringPtr {
   // hardening is enabled, in which case this instance will hold a forced copy.
   explicit ArenaStringPtr(Arena* arena)
       : tagged_ptr_(&fixed_address_empty_string) {
-    if (DebugHardenStringValues()) {
+    if (DebugHardenForceCopyDefaultString()) {
       Set(absl::string_view(""), arena);
     }
   }
@@ -248,7 +251,7 @@ struct PROTOBUF_EXPORT ArenaStringPtr {
   // forced copy of the value in `default_value`.
   ArenaStringPtr(Arena* arena, const LazyString& default_value)
       : tagged_ptr_(&fixed_address_empty_string) {
-    if (DebugHardenStringValues()) {
+    if (DebugHardenForceCopyDefaultString()) {
       Set(absl::string_view(default_value.get()), arena);
     }
   }
@@ -425,7 +428,7 @@ struct PROTOBUF_EXPORT ArenaStringPtr {
 };
 
 inline TaggedStringPtr TaggedStringPtr::Copy(Arena* arena) const {
-  if (DebugHardenStringValues()) {
+  if (DebugHardenForceCopyDefaultString()) {
     // Harden by forcing an allocated string value.
     return IsNull() ? *this : ForceCopy(arena);
   }
@@ -434,7 +437,7 @@ inline TaggedStringPtr TaggedStringPtr::Copy(Arena* arena) const {
 
 inline TaggedStringPtr TaggedStringPtr::Copy(
     Arena* arena, const LazyString& default_value) const {
-  if (DebugHardenStringValues()) {
+  if (DebugHardenForceCopyDefaultString()) {
     // Harden by forcing an allocated string value.
     TaggedStringPtr hardened(*this);
     if (IsDefault()) {
@@ -500,22 +503,22 @@ inline PROTOBUF_NDEBUG_INLINE void ArenaStringPtr::InternalSwap(
   // Silence unused variable warnings in release buildls.
   (void)arena;
   std::swap(lhs->tagged_ptr_, rhs->tagged_ptr_);
-#ifdef PROTOBUF_FORCE_COPY_IN_SWAP
-  for (auto* p : {lhs, rhs}) {
-    if (p->IsDefault()) continue;
-    std::string* old_value = p->tagged_ptr_.Get();
-    std::string* new_value =
-        p->IsFixedSizeArena()
-            ? Arena::Create<std::string>(arena, *old_value)
-            : Arena::Create<std::string>(arena, std::move(*old_value));
-    if (arena == nullptr) {
-      delete old_value;
-      p->tagged_ptr_.SetAllocated(new_value);
-    } else {
-      p->tagged_ptr_.SetMutableArena(new_value);
+  if (internal::DebugHardenForceCopyInSwap()) {
+    for (auto* p : {lhs, rhs}) {
+      if (p->IsDefault()) continue;
+      std::string* old_value = p->tagged_ptr_.Get();
+      std::string* new_value =
+          p->IsFixedSizeArena()
+              ? Arena::Create<std::string>(arena, *old_value)
+              : Arena::Create<std::string>(arena, std::move(*old_value));
+      if (arena == nullptr) {
+        delete old_value;
+        p->tagged_ptr_.SetAllocated(new_value);
+      } else {
+        p->tagged_ptr_.SetMutableArena(new_value);
+      }
     }
   }
-#endif  // PROTOBUF_FORCE_COPY_IN_SWAP
 }
 
 inline void ArenaStringPtr::ClearNonDefaultToEmpty() {

@@ -8,16 +8,17 @@
 #ifndef GOOGLE_PROTOBUF_COMPILER_CPP_PARSE_FUNCTION_GENERATOR_H__
 #define GOOGLE_PROTOBUF_COMPILER_CPP_PARSE_FUNCTION_GENERATOR_H__
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/strings/string_view.h"
 #include "google/protobuf/compiler/cpp/helpers.h"
 #include "google/protobuf/compiler/cpp/options.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/generated_message_tctable_gen.h"
 #include "google/protobuf/io/printer.h"
-#include "google/protobuf/wire_format_lite.h"
 
 namespace google {
 namespace protobuf {
@@ -33,13 +34,8 @@ class ParseFunctionGenerator {
       const std::vector<int>& has_bit_indices,
       const std::vector<int>& inlined_string_indices, const Options& options,
       MessageSCCAnalyzer* scc_analyzer,
-      const absl::flat_hash_map<absl::string_view, std::string>& vars);
-
-  // Emits class-level method declarations to `printer`:
-  void GenerateMethodDecls(io::Printer* printer);
-
-  // Emits out-of-class method implementation definitions to `printer`:
-  void GenerateMethodImpls(io::Printer* printer);
+      const absl::flat_hash_map<absl::string_view, std::string>& vars,
+      int index_in_file_messages);
 
   // Emits class-level data member declarations to `printer`:
   void GenerateDataDecls(io::Printer* printer);
@@ -49,12 +45,6 @@ class ParseFunctionGenerator {
 
  private:
   class GeneratedOptionProvider;
-
-  // Returns true if tailcall table code should be generated.
-  bool should_generate_tctable() const;
-
-  // Generates a tail-calling `_InternalParse` function.
-  void GenerateTailcallParseFunction(Formatter& format);
 
   // Generates the tail-call table definition.
   void GenerateTailCallTable(io::Printer* printer);
@@ -70,6 +60,7 @@ class ParseFunctionGenerator {
   std::vector<int> inlined_string_indices_;
   const std::vector<const FieldDescriptor*> ordered_fields_;
   int num_hasbits_;
+  int index_in_file_messages_;
 };
 
 }  // namespace cpp

@@ -65,7 +65,7 @@ include(CTest)
 # building Abseil as a DLL, it is important to have the DLL in the same
 # directory as the executable using it. Thus, we put all executables in a single
 # /bin directory.
-#set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # when absl is included as subproject (i.e. using add_subdirectory(abseil-cpp))
 # in the source tree of a project that uses it, install rules are disabled.

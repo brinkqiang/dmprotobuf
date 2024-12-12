@@ -6,10 +6,6 @@
 # https://developers.google.com/open-source/licenses/bsd
 
 load(
-    "//bazel:build_defs.bzl",
-    "UPB_DEFAULT_CPPOPTS",
-)
-load(
     "//bazel:upb_minitable_proto_library.bzl",
     "upb_minitable_proto_library",
 )
@@ -18,10 +14,12 @@ load(
     "upb_c_proto_library",
     "upb_proto_reflection_library",
 )
+load(
+    "//upb/bazel:build_defs.bzl",
+    "UPB_DEFAULT_CPPOPTS",
+)
 
-# begin:google_only
-# package(default_applicable_licenses = ["//upb:license"])
-# end:google_only
+package(default_applicable_licenses = ["//:license"])
 
 cc_library(
     name = "parse_text_proto",
@@ -68,6 +66,7 @@ proto_library(
     name = "test_proto",
     testonly = 1,
     srcs = ["test.proto"],
+    visibility = ["//visibility:private"],
 )
 
 upb_minitable_proto_library(
@@ -201,6 +200,25 @@ cc_test(
 )
 
 cc_test(
+    name = "length_prefixed_test",
+    srcs = ["length_prefixed_test.cc"],
+    copts = UPB_DEFAULT_CPPOPTS,
+    deps = [
+        ":test_messages_proto2_upb_minitable",
+        ":test_messages_proto2_upb_proto",
+        "//upb:base",
+        "//upb:mem",
+        "//upb:message",
+        "//upb:message_compare",
+        "//upb:mini_table",
+        "//upb:wire",
+        "//upb/mem:internal",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "test_cpp",
     srcs = ["test_cpp.cc"],
     copts = UPB_DEFAULT_CPPOPTS,
@@ -306,25 +324,33 @@ cc_test(
     ],
 )
 
-# begin:github_only
 filegroup(
     name = "test_srcs",
     srcs = glob(
         [
-            "**/*.cc",
-            "**/*.h",
+            "**/*test.cc",
+            "**/test_*.cc",
         ],
     ),
-    visibility = ["//pkg:__pkg__"],
+    visibility = ["//upb:__pkg__"],
 )
 
 filegroup(
-    name = "test_utils",
+    name = "test_util",
+    srcs = [
+        "fuzz_util.cc",
+        "fuzz_util.h",
+        "parse_text_proto.h",
+    ],
+    visibility = ["//upb:__pkg__"],
+)
+
+filegroup(
+    name = "test_protos",
     srcs = glob(
         [
             "**/*.proto",
         ],
     ),
-    visibility = ["//pkg:__pkg__"],
+    visibility = ["//upb:__pkg__"],
 )
-# end:github_only

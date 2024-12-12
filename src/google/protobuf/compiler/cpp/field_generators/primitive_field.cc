@@ -89,7 +89,7 @@ class SingularPrimitive final : public FieldGeneratorBase {
  public:
   SingularPrimitive(const FieldDescriptor* field, const Options& opts,
                     MessageSCCAnalyzer* scc)
-      : FieldGeneratorBase(field, opts, scc), field_(field), opts_(&opts) {}
+      : FieldGeneratorBase(field, opts, scc), opts_(&opts) {}
   ~SingularPrimitive() override = default;
 
   std::vector<Sub> MakeVars() const override { return Vars(field_, *opts_); }
@@ -164,7 +164,6 @@ class SingularPrimitive final : public FieldGeneratorBase {
   void GenerateByteSize(io::Printer* p) const override;
 
  private:
-  const FieldDescriptor* field_;
   const Options* opts_;
 };
 
@@ -239,23 +238,23 @@ void SingularPrimitive::GenerateInlineAccessorDefinitions(
 
 void SingularPrimitive::GenerateSerializeWithCachedSizesToArray(
     io::Printer* p) const {
-  if ((descriptor_->number() < 16) &&
-      (descriptor_->type() == FieldDescriptor::TYPE_INT32 ||
-       descriptor_->type() == FieldDescriptor::TYPE_INT64 ||
-       descriptor_->type() == FieldDescriptor::TYPE_ENUM)) {
+  if ((field_->number() < 16) &&
+      (field_->type() == FieldDescriptor::TYPE_INT32 ||
+       field_->type() == FieldDescriptor::TYPE_INT64 ||
+       field_->type() == FieldDescriptor::TYPE_ENUM)) {
     // Call special non-inlined routine with tag number hardcoded as a
     // template parameter that handles the EnsureSpace and the writing
     // of the tag+value to the array
     p->Emit(R"cc(
       target = ::$proto_ns$::internal::WireFormatLite::
           Write$declared_type$ToArrayWithField<$number$>(
-              stream, this->_internal_$name$(), target);
+              stream, this_._internal_$name$(), target);
     )cc");
   } else {
     p->Emit(R"cc(
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::Write$DeclaredType$ToArray(
-          $number$, this->_internal_$name$(), target);
+          $number$, this_._internal_$name$(), target);
     )cc");
   }
 }
@@ -276,14 +275,14 @@ void SingularPrimitive::GenerateByteSize(io::Printer* p) const {
   if (tag_size == 1) {
     p->Emit(R"cc(
       total_size += ::_pbi::WireFormatLite::$DeclaredType$SizePlusOne(
-          this->_internal_$name$());
+          this_._internal_$name$());
     )cc");
     return;
   }
 
   p->Emit(R"cc(
     total_size += $kTagBytes$ + ::_pbi::WireFormatLite::$DeclaredType$Size(
-                                    this->_internal_$name$());
+                                    this_._internal_$name$());
   )cc");
 }
 
@@ -291,7 +290,7 @@ class RepeatedPrimitive final : public FieldGeneratorBase {
  public:
   RepeatedPrimitive(const FieldDescriptor* field, const Options& opts,
                     MessageSCCAnalyzer* scc)
-      : FieldGeneratorBase(field, opts, scc), field_(field), opts_(&opts) {}
+      : FieldGeneratorBase(field, opts, scc), opts_(&opts) {}
   ~RepeatedPrimitive() override = default;
 
   std::vector<Sub> MakeVars() const override { return Vars(field_, *opts_); }
@@ -333,7 +332,7 @@ class RepeatedPrimitive final : public FieldGeneratorBase {
   void GenerateDestructorCode(io::Printer* p) const override {
     if (should_split()) {
       p->Emit(R"cc(
-        $field_$.DeleteIfNotDefault();
+        this_.$field_$.DeleteIfNotDefault();
       )cc");
     }
   }
@@ -421,7 +420,6 @@ class RepeatedPrimitive final : public FieldGeneratorBase {
     )cc");
   }
 
-  const FieldDescriptor* field_;
   const Options* opts_;
 };
 
@@ -439,7 +437,7 @@ void RepeatedPrimitive::GeneratePrivateMembers(io::Printer* p) const {
   if (HasCachedSize()) {
     p->Emit({{"_cached_size_", MakeVarintCachedSizeName(field_)}},
             R"cc(
-              mutable $pbi$::CachedSize $_cached_size_$;
+              $pbi$::CachedSize $_cached_size_$;
             )cc");
   }
 }
@@ -524,8 +522,7 @@ void RepeatedPrimitive::GenerateInlineAccessorDefinitions(
         $TsanDetectConcurrentRead$;
         $PrepareSplitMessageForWrite$;
         if ($field_$.IsDefault()) {
-          $field_$.Set($pb$::Arena::CreateMessage<$pb$::RepeatedField<$Type$>>(
-              GetArena()));
+          $field_$.Set($pb$::Arena::Create<$pb$::RepeatedField<$Type$>>(GetArena()));
         }
         return $field_$.Get();
       }
@@ -549,10 +546,10 @@ void RepeatedPrimitive::GenerateSerializeWithCachedSizesToArray(
     io::Printer* p) const {
   if (!field_->is_packed()) {
     p->Emit(R"cc(
-      for (int i = 0, n = this->_internal_$name$_size(); i < n; ++i) {
+      for (int i = 0, n = this_._internal_$name$_size(); i < n; ++i) {
         target = stream->EnsureSpace(target);
         target = ::_pbi::WireFormatLite::Write$DeclaredType$ToArray(
-            $number$, this->_internal_$name$().Get(i), target);
+            $number$, this_._internal_$name$().Get(i), target);
       }
     )cc");
     return;
@@ -560,8 +557,8 @@ void RepeatedPrimitive::GenerateSerializeWithCachedSizesToArray(
 
   if (FixedSize(field_->type()).has_value()) {
     p->Emit(R"cc(
-      if (this->_internal_$name$_size() > 0) {
-        target = stream->WriteFixedPacked($number$, _internal_$name$(), target);
+      if (this_._internal_$name$_size() > 0) {
+        target = stream->WriteFixedPacked($number$, this_._internal_$name$(), target);
       }
     )cc");
     return;
@@ -572,11 +569,11 @@ void RepeatedPrimitive::GenerateSerializeWithCachedSizesToArray(
           {"byte_size",
            [&] {
              if (HasCachedSize()) {
-               p->Emit(R"cc($_field_cached_byte_size_$.Get();)cc");
+               p->Emit(R"cc(this_.$_field_cached_byte_size_$.Get();)cc");
              } else {
                p->Emit(R"cc(
                  ::_pbi::WireFormatLite::$DeclaredType$Size(
-                     this->_internal_$name$());
+                     this_._internal_$name$());
                )cc");
              }
            }},
@@ -586,64 +583,62 @@ void RepeatedPrimitive::GenerateSerializeWithCachedSizesToArray(
           int byte_size = $byte_size$;
           if (byte_size > 0) {
             target = stream->Write$DeclaredType$Packed(
-                $number$, _internal_$name$(), byte_size, target);
+                $number$, this_._internal_$name$(), byte_size, target);
           }
         }
       )cc");
 }
 
 void RepeatedPrimitive::GenerateByteSize(io::Printer* p) const {
+  if (HasCachedSize()) {
+    ABSL_CHECK(field_->is_packed());
+    p->Emit(
+        R"cc(
+          total_size +=
+              ::_pbi::WireFormatLite::$DeclaredType$SizeWithPackedTagSize(
+                  this_._internal_$name$(), $kTagBytes$,
+                  this_.$_field_cached_byte_size_$);
+        )cc");
+    return;
+  }
   p->Emit(
       {
-          Sub{"data_size",
-              [&] {
-                auto fixed_size = FixedSize(descriptor_->type());
-                if (fixed_size.has_value()) {
-                  p->Emit({{"kFixed", *fixed_size}}, R"cc(
-                    std::size_t{$kFixed$} *
-                        ::_pbi::FromIntSize(this->_internal_$name$_size())
-                  )cc");
-                } else {
-                  p->Emit(R"cc(
-                    ::_pbi::WireFormatLite::$DeclaredType$Size(
-                        this->_internal_$name$())
-                  )cc");
-                }
-              }}  // Here and below, we need to disable the default ;-chomping
-                  // that closure substitutions do.
-              .WithSuffix(""),
-          {"maybe_cache_data_size",
+          {"data_size",
            [&] {
-             if (!HasCachedSize()) return;
-             p->Emit(R"cc(
-               $_field_cached_byte_size_$.Set(::_pbi::ToCachedSize(data_size));
-             )cc");
+             auto fixed_size = FixedSize(field_->type());
+             if (fixed_size.has_value()) {
+               p->Emit({{"kFixed", *fixed_size}}, R"cc(
+                 std::size_t{$kFixed$} *
+                     ::_pbi::FromIntSize(this_._internal_$name$_size());
+               )cc");
+             } else {
+               p->Emit(R"cc(
+                 ::_pbi::WireFormatLite::$DeclaredType$Size(
+                     this_._internal_$name$());
+               )cc");
+             }
            }},
-          Sub{"tag_size",
-              [&] {
-                if (field_->is_packed()) {
-                  p->Emit(R"cc(
-                    data_size == 0
-                        ? 0
-                        : $kTagBytes$ + ::_pbi::WireFormatLite::Int32Size(
-                                            static_cast<int32_t>(data_size))
-                  )cc");
-                } else {
-                  p->Emit(R"cc(
-                    std::size_t{$kTagBytes$} *
-                        ::_pbi::FromIntSize(this->_internal_$name$_size());
-                  )cc");
-                }
-              }}
-              .WithSuffix(""),
+          {"tag_size",
+           [&] {
+             if (field_->is_packed()) {
+               p->Emit(R"cc(
+                 data_size == 0
+                     ? 0
+                     : $kTagBytes$ + ::_pbi::WireFormatLite::Int32Size(
+                                         static_cast<int32_t>(data_size));
+               )cc");
+             } else {
+               p->Emit(R"cc(
+                 std::size_t{$kTagBytes$} *
+                     ::_pbi::FromIntSize(this_._internal_$name$_size());
+               )cc");
+             }
+           }},
       },
       R"cc(
-        {
-          std::size_t data_size = $data_size$;
-          $maybe_cache_data_size$;
-          std::size_t tag_size = $tag_size$;
-          total_size += tag_size + data_size;
-        }
+        std::size_t data_size = $data_size$;
+        std::size_t tag_size = $tag_size$;
+        total_size += tag_size + data_size;
       )cc");
 }
 }  // namespace

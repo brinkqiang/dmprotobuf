@@ -41,9 +41,13 @@ option(protobuf_BUILD_EXAMPLES "Build examples" OFF)
 option(protobuf_BUILD_PROTOBUF_BINARIES "Build protobuf libraries and protoc compiler" ON)
 option(protobuf_BUILD_PROTOC_BINARIES "Build libprotoc and protoc compiler" ON)
 option(protobuf_BUILD_LIBPROTOC "Build libprotoc" OFF)
+option(protobuf_BUILD_LIBUPB "Build libupb" ON)
 option(protobuf_DISABLE_RTTI "Remove runtime type information in the binaries" OFF)
 option(protobuf_TEST_XML_OUTDIR "Output directory for XML logs from tests." "")
 option(protobuf_ALLOW_CCACHE "Adjust build flags to allow for ccache support." OFF)
+
+# We support Unity (Jumbo) builds best-effort.
+option(protobuf_USE_UNITY_BUILD "Enable Unity (Jumbo) build for" OFF)
 if (BUILD_SHARED_LIBS)
   set(protobuf_BUILD_SHARED_LIBS_DEFAULT ON)
 else (BUILD_SHARED_LIBS)
@@ -62,7 +66,8 @@ mark_as_advanced(protobuf_DEBUG_POSTFIX)
 if(WITH_PROTOC)
   set(protobuf_PROTOC_EXE protoc)
   set(protobuf_BUILD_PROTOC_BINARIES OFF)
-  add_executable(protoc IMPORTED)
+  add_executable(protoc IMPORTED GLOBAL)
+  add_executable(protobuf::protoc ALIAS protoc)
   set_property(TARGET protoc PROPERTY IMPORTED_LOCATION ${WITH_PROTOC})
 endif()
 
@@ -80,16 +85,16 @@ if (protobuf_BUILD_SHARED_LIBS)
   # building Protobuf as a DLL, it is important to have the DLL in the same
   # directory as the executable using it. Thus, we put all binaries in a single
   # /bin directory.
-  #if (MSVC)
-  #  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  #  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  #  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  #  set(CMAKE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  #endif ()
+  if (MSVC)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    set(CMAKE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+  endif ()
 endif ()
 
 # Version metadata
-set(protobuf_VERSION_STRING "5.26.1")
+set(protobuf_VERSION_STRING "5.29.1")
 set(protobuf_DESCRIPTION "Protocol Buffers")
 set(protobuf_CONTACT "protobuf@googlegroups.com")
 
@@ -291,10 +296,10 @@ include_directories(
   ${protobuf_BINARY_DIR}
   # Support #include-ing other top-level directories, i.e. upb_generator.
   ${protobuf_SOURCE_DIR}
+  ${protobuf_BINARY_DIR}/src
   ${protobuf_SOURCE_DIR}/src)
 
 set(protobuf_ABSL_PROVIDER "module" CACHE STRING "Provider of absl library")
-
 set_property(CACHE protobuf_ABSL_PROVIDER PROPERTY STRINGS "module" "package")
 
 set(protobuf_JSONCPP_PROVIDER "module" CACHE STRING "Provider of jsoncpp library")
@@ -322,6 +327,13 @@ if (protobuf_BUILD_PROTOBUF_BINARIES)
       set(protobuf_LIB_PROTOC libprotoc)
     endif ()
   endif ()
+  if (protobuf_BUILD_LIBUPB)
+    include(${protobuf_SOURCE_DIR}/cmake/libupb.cmake)
+    if (NOT DEFINED protobuf_LIB_UPB)
+      set(protobuf_LIB_UPB libupb)
+    endif ()
+    include(${protobuf_SOURCE_DIR}/cmake/upb_generators.cmake)
+  endif ()
   if (protobuf_BUILD_PROTOC_BINARIES)
     include(${protobuf_SOURCE_DIR}/cmake/protoc.cmake)
     if (NOT DEFINED protobuf_PROTOC_EXE)
@@ -335,6 +347,7 @@ else ()
     set(protobuf_LIB_PROTOC protobuf::libprotoc)
     set(protobuf_LIB_PROTOBUF protobuf::libprotobuf)
     set(protobuf_LIB_PROTOBUF_LITE protobuf::libprotobuf-lite)
+    set(protobuf_LIB_UPB protobuf::libupb)
     message(STATUS "CMake installation of Protobuf found.")
   endif ()
 endif ()
@@ -350,6 +363,7 @@ if (protobuf_BUILD_TESTS OR protobuf_BUILD_CONFORMANCE OR protobuf_BUILD_EXAMPLE
     message(STATUS "Using libprotobuf : ${protobuf_LIB_PROTOBUF}")
     message(STATUS "Using libprotobuf-lite : ${protobuf_LIB_PROTOBUF_LITE}")
     message(STATUS "Using libprotoc : ${protobuf_LIB_PROTOC}")
+    message(STATUS "Using libupb : ${protobuf_LIB_UPB}")
   endif(protobuf_VERBOSE)
 endif ()
 

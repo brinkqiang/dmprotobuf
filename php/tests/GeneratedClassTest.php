@@ -10,6 +10,7 @@ use Foo\Test32Fields;
 use Foo\TestEnum;
 use Foo\TestIncludeNamespaceMessage;
 use Foo\TestIncludePrefixMessage;
+use Foo\TestSpecialCharacters;
 use Foo\TestMessage;
 use Foo\TestMessage\Sub;
 use Foo\TestMessage\NestedEnum;
@@ -98,6 +99,92 @@ class GeneratedClassTest extends TestBase
         restore_error_handler();
 
         $this->assertSame(4, $deprecationCount);
+    }
+
+    public function testDeprecatedFieldGetterDoesNotThrowWarning()
+    {
+        // temporarily change error handler to capture the deprecated errors
+        $deprecationCount = 0;
+        set_error_handler(function ($errno, $errstr) use (&$deprecationCount) {
+            if (false !== strpos($errstr, ' is deprecated.')) {
+                $deprecationCount++;
+            }
+        }, E_USER_DEPRECATED);
+
+        // does not throw warning
+        $message = new TestMessage();
+        $message->getDeprecatedInt32();
+        $message->getDeprecatedOptionalInt32();
+        $message->getDeprecatedInt32ValueUnwrapped(); // wrapped field
+        $message->getDeprecatedInt32Value(); // wrapped field
+        $message->getDeprecatedOneofInt32(); // oneof field
+        $message->getDeprecatedOneof(); // oneof field
+        $message->getDeprecatedRepeatedInt32(); // repeated field
+        $message->getDeprecatedMapInt32Int32(); // map field
+        $message->getDeprecatedAny(); // any field
+        $message->getDeprecatedMessage(); // message field
+        $message->getDeprecatedEnum(); // enum field
+
+        restore_error_handler();
+
+        $this->assertEquals(0, $deprecationCount);
+    }
+
+    public function testDeprecatedFieldGetterThrowsWarningWithValue()
+    {
+        $message = new TestMessage([
+            'deprecated_int32' => 1,
+            'deprecated_optional_int32' => 1,
+            'deprecated_int32_value' => new \Google\Protobuf\Int32Value(['value' => 1]),
+            'deprecated_oneof_int32' => 1,
+            'deprecated_repeated_int32' => [1],
+            'deprecated_map_int32_int32' => [1 => 1],
+            'deprecated_any' => new \Google\Protobuf\Any(['type_url' => 'foo', 'value' => 'bar']),
+            'deprecated_message' => new TestMessage(),
+            'deprecated_enum' => 1,
+        ]);
+
+        // temporarily change error handler to capture the deprecated errors
+        $deprecationCount = 0;
+        set_error_handler(function ($errno, $errstr) use (&$deprecationCount) {
+            if (false !== strpos($errstr, ' is deprecated.')) {
+                $deprecationCount++;
+            }
+        }, E_USER_DEPRECATED);
+
+        $message->getDeprecatedInt32();
+        $message->getDeprecatedOptionalInt32();
+        $message->getDeprecatedInt32ValueUnwrapped(); // wrapped field unwrapped
+        $message->getDeprecatedInt32Value(); // wrapped field
+        $message->getDeprecatedOneofInt32(); // oneof field
+        $message->getDeprecatedRepeatedInt32(); // repeated field
+        $message->getDeprecatedMapInt32Int32(); // map field
+        $message->getDeprecatedAny(); // any field
+        $message->getDeprecatedMessage(); // message field
+        $message->getDeprecatedEnum(); // enum field
+
+        // oneof field (should never warn)
+        $message->getDeprecatedOneof();
+
+        restore_error_handler();
+
+        $this->assertEquals(10, $deprecationCount);
+    }
+
+    public function testDeprecatedFieldWarningsOnSerialize()
+    {
+        set_error_handler(function ($errno, $errstr) {
+            if (false !== strpos($errstr, ' is deprecated.')) {
+                throw new \Exception($errstr);
+            }
+        }, E_USER_DEPRECATED);
+
+        $message = new TestMessage();
+        $message->serializeToJsonString();
+
+        restore_error_handler();
+
+        $this->assertTrue(true, 'No deprecation warning on serialize');
     }
 
     #########################################################
@@ -796,7 +883,7 @@ class GeneratedClassTest extends TestBase
         $this->assertSame(TestNamespace\NestedEnum::ZERO, $m->getNestedEnum());
     }
 
-    public function testMesssagesAndEnumsWithEmptyPhpNamespace()
+    public function testMessagesAndEnumsWithEmptyPhpNamespace()
     {
         $m = new TestEmptyNamespace();
         $n = new TestEmptyNamespace\NestedMessage();
@@ -1845,5 +1932,26 @@ class GeneratedClassTest extends TestBase
         $this->assertEquals(8, $m->getId());
         $m->setVersion('1');
         $this->assertEquals(8, $m->getId());
+    }
+
+    public function testSpecialCharacters()
+    {
+        $reflectionMethod = new \ReflectionMethod(TestSpecialCharacters::class, 'getA');
+        $docComment = $reflectionMethod->getDocComment();
+        $commentLines = explode("\n", $docComment);
+        $this->assertEquals('/**', array_shift($commentLines));
+        $this->assertEquals('     */', array_pop($commentLines));
+        $docComment = implode("\n", $commentLines);
+        // test special characters
+        $this->assertContains(";,/?:&=+$-_.!~*'()", $docComment);
+        // test open doc comment
+        $this->assertContains('/*', $docComment);
+        // test escaped closed doc comment
+        $this->assertNotContains('*/', $docComment);
+        $this->assertContains('{@*}', $docComment);
+        // test escaped at-sign
+        $this->assertContains('\@foo', $docComment);
+        // test forwardslash on new line
+        $this->assertContains("* /\n", $docComment);
     }
 }

@@ -17,9 +17,12 @@ import java.math.BigInteger;
 import java.nio.CharBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -38,13 +41,20 @@ public final class TextFormat {
 
   private static final String DEBUG_STRING_SILENT_MARKER = "\t ";
 
+  private static final String REDACTED_MARKER = "[REDACTED]";
+
   /**
    * Generates a human readable form of this message, useful for debugging and other purposes, with
    * no newline characters. This is just a trivial wrapper around {@link
    * TextFormat.Printer#shortDebugString(MessageOrBuilder)}.
+   *
+   * @deprecated Use {@code printer().emittingSingleLine(true).printToString(MessageOrBuilder)}
    */
+  @Deprecated
   public static String shortDebugString(final MessageOrBuilder message) {
-    return printer().shortDebugString(message);
+    return printer()
+        .emittingSingleLine(true)
+        .printToString(message, Printer.FieldReporterLevel.SHORT_DEBUG_STRING);
   }
 
   /**
@@ -58,11 +68,12 @@ public final class TextFormat {
    */
   public static void printUnknownFieldValue(
       final int tag, final Object value, final Appendable output) throws IOException {
-    printUnknownFieldValue(tag, value, multiLineOutput(output));
+    printUnknownFieldValue(tag, value, setSingleLineOutput(output, false), false);
   }
 
   private static void printUnknownFieldValue(
-      final int tag, final Object value, final TextGenerator generator) throws IOException {
+      final int tag, final Object value, final TextGenerator generator, boolean redact)
+      throws IOException {
     switch (WireFormat.getTagWireType(tag)) {
       case WireFormat.WIRETYPE_VARINT:
         generator.print(unsignedToString((Long) value));
@@ -80,7 +91,7 @@ public final class TextFormat {
           generator.print("{");
           generator.eol();
           generator.indent();
-          Printer.printUnknownFields(message, generator);
+          Printer.printUnknownFields(message, generator, redact);
           generator.outdent();
           generator.print("}");
         } catch (InvalidProtocolBufferException e) {
@@ -91,7 +102,7 @@ public final class TextFormat {
         }
         break;
       case WireFormat.WIRETYPE_START_GROUP:
-        Printer.printUnknownFields((UnknownFieldSet) value, generator);
+        Printer.printUnknownFields((UnknownFieldSet) value, generator, redact);
         break;
       default:
         throw new IllegalArgumentException("Bad tag: " + tag);
@@ -100,16 +111,59 @@ public final class TextFormat {
 
   /** Printer instance which escapes non-ASCII characters. */
   public static Printer printer() {
-    return Printer.DEFAULT;
+    return Printer.DEFAULT_TEXT_FORMAT;
+  }
+
+  /** Printer instance which escapes non-ASCII characters and prints in the debug format. */
+  public static Printer debugFormatPrinter() {
+    return Printer.DEFAULT_DEBUG_FORMAT;
   }
 
   /** Helper class for converting protobufs to text. */
   public static final class Printer {
 
-    // Printer instance which escapes non-ASCII characters.
-    private static final Printer DEFAULT =
+    // Printer instance which escapes non-ASCII characters and prints in the text format.
+    private static final Printer DEFAULT_TEXT_FORMAT =
         new Printer(
-            true, TypeRegistry.getEmptyTypeRegistry(), ExtensionRegistryLite.getEmptyRegistry());
+            true,
+            TypeRegistry.getEmptyTypeRegistry(),
+            ExtensionRegistryLite.getEmptyRegistry(),
+            false,
+            false);
+
+    // Printer instance which escapes non-ASCII characters and prints in the debug format.
+    private static final Printer DEFAULT_DEBUG_FORMAT =
+        new Printer(
+            true,
+            TypeRegistry.getEmptyTypeRegistry(),
+            ExtensionRegistryLite.getEmptyRegistry(),
+            true,
+            false);
+
+    /**
+     * A list of the public APIs that output human-readable text from a message. A higher-level API
+     * must be larger than any lower-level APIs it calls under the hood, e.g
+     * DEBUG_MULTILINE.compareTo(PRINTER_PRINT_TO_STRING) > 0. The inverse is not necessarily true.
+     */
+    static enum FieldReporterLevel {
+      NO_REPORT(0),
+      PRINT(1),
+      PRINTER_PRINT_TO_STRING(2),
+      TEXTFORMAT_PRINT_TO_STRING(3),
+      PRINT_UNICODE(4),
+      SHORT_DEBUG_STRING(5),
+      LEGACY_MULTILINE(6),
+      LEGACY_SINGLE_LINE(7),
+      DEBUG_MULTILINE(8),
+      DEBUG_SINGLE_LINE(9),
+      ABSTRACT_TO_STRING(10),
+      ABSTRACT_MUTABLE_TO_STRING(11);
+      private final int index;
+
+      FieldReporterLevel(int index) {
+        this.index = index;
+      }
+    }
 
     /** Whether to escape non ASCII characters with backslash and octal. */
     private final boolean escapeNonAscii;
@@ -117,13 +171,35 @@ public final class TextFormat {
     private final TypeRegistry typeRegistry;
     private final ExtensionRegistryLite extensionRegistry;
 
+    /**
+     * Whether to enable redaction of sensitive fields and introduce randomization. Note that when
+     * this is enabled, the output will no longer be deserializable.
+     */
+    private final boolean enablingSafeDebugFormat;
+
+    private final boolean singleLine;
+
+    // Any API level higher than this level will be reported. This is set to
+    // ABSTRACT_MUTABLE_TO_STRING by default to prevent reporting for now.
+    private static final ThreadLocal<FieldReporterLevel> sensitiveFieldReportingLevel =
+        new ThreadLocal<FieldReporterLevel>() {
+          @Override
+          protected FieldReporterLevel initialValue() {
+            return FieldReporterLevel.ABSTRACT_MUTABLE_TO_STRING;
+          }
+        };
+
     private Printer(
         boolean escapeNonAscii,
         TypeRegistry typeRegistry,
-        ExtensionRegistryLite extensionRegistry) {
+        ExtensionRegistryLite extensionRegistry,
+        boolean enablingSafeDebugFormat,
+        boolean singleLine) {
       this.escapeNonAscii = escapeNonAscii;
       this.typeRegistry = typeRegistry;
       this.extensionRegistry = extensionRegistry;
+      this.enablingSafeDebugFormat = enablingSafeDebugFormat;
+      this.singleLine = singleLine;
     }
 
     /**
@@ -136,7 +212,8 @@ public final class TextFormat {
      *     with the escape mode set to the given parameter.
      */
     public Printer escapingNonAscii(boolean escapeNonAscii) {
-      return new Printer(escapeNonAscii, typeRegistry, extensionRegistry);
+      return new Printer(
+          escapeNonAscii, typeRegistry, extensionRegistry, enablingSafeDebugFormat, singleLine);
     }
 
     /**
@@ -149,7 +226,8 @@ public final class TextFormat {
       if (this.typeRegistry != TypeRegistry.getEmptyTypeRegistry()) {
         throw new IllegalArgumentException("Only one typeRegistry is allowed.");
       }
-      return new Printer(escapeNonAscii, typeRegistry, extensionRegistry);
+      return new Printer(
+          escapeNonAscii, typeRegistry, extensionRegistry, enablingSafeDebugFormat, singleLine);
     }
 
     /**
@@ -162,7 +240,38 @@ public final class TextFormat {
       if (this.extensionRegistry != ExtensionRegistryLite.getEmptyRegistry()) {
         throw new IllegalArgumentException("Only one extensionRegistry is allowed.");
       }
-      return new Printer(escapeNonAscii, typeRegistry, extensionRegistry);
+      return new Printer(
+          escapeNonAscii, typeRegistry, extensionRegistry, enablingSafeDebugFormat, singleLine);
+    }
+
+    /**
+     * Return a new Printer instance that outputs a redacted and unstable format suitable for
+     * debugging.
+     *
+     * @param enablingSafeDebugFormat If true, the new Printer will redact all proto fields that are
+     *     marked by a debug_redact=true option, and apply an unstable prefix to the output.
+     * @return a new Printer that clones all other configurations from the current {@link Printer},
+     *     with the enablingSafeDebugFormat mode set to the given parameter.
+     */
+    Printer enablingSafeDebugFormat(boolean enablingSafeDebugFormat) {
+      return new Printer(
+          escapeNonAscii, typeRegistry, extensionRegistry, enablingSafeDebugFormat, singleLine);
+    }
+
+    /**
+     * Return a new Printer instance with the specified line formatting status.
+     *
+     * @param singleLine If true, the new Printer will output no newline characters.
+     * @return a new Printer that clones all other configurations from the current {@link Printer},
+     *     with the singleLine mode set to the given parameter.
+     */
+    public Printer emittingSingleLine(boolean singleLine) {
+      return new Printer(
+          escapeNonAscii, typeRegistry, extensionRegistry, enablingSafeDebugFormat, singleLine);
+    }
+
+    void setSensitiveFieldReportingLevel(FieldReporterLevel level) {
+      Printer.sensitiveFieldReportingLevel.set(level);
     }
 
     /**
@@ -171,12 +280,19 @@ public final class TextFormat {
      * original Protocol Buffer system)
      */
     public void print(final MessageOrBuilder message, final Appendable output) throws IOException {
-      print(message, multiLineOutput(output));
+      print(message, output, FieldReporterLevel.PRINT);
+    }
+
+    void print(final MessageOrBuilder message, final Appendable output, FieldReporterLevel level)
+        throws IOException {
+      TextGenerator generator = setSingleLineOutput(output, this.singleLine, level);
+      print(message, generator);
     }
 
     /** Outputs a textual representation of {@code fields} to {@code output}. */
     public void print(final UnknownFieldSet fields, final Appendable output) throws IOException {
-      printUnknownFields(fields, multiLineOutput(output));
+      printUnknownFields(
+          fields, setSingleLineOutput(output, this.singleLine), this.enablingSafeDebugFormat);
     }
 
     private void print(final MessageOrBuilder message, final TextGenerator generator)
@@ -186,6 +302,14 @@ public final class TextFormat {
         return;
       }
       printMessage(message, generator);
+    }
+
+    private void applyUnstablePrefix(final Appendable output) {
+      try {
+        output.append("");
+      } catch (IOException e) {
+        throw new IllegalStateException(e);
+      }
     }
 
     /**
@@ -244,6 +368,9 @@ public final class TextFormat {
     public String printFieldToString(final FieldDescriptor field, final Object value) {
       try {
         final StringBuilder text = new StringBuilder();
+        if (enablingSafeDebugFormat) {
+          applyUnstablePrefix(text);
+        }
         printField(field, value, text);
         return text.toString();
       } catch (IOException e) {
@@ -253,7 +380,7 @@ public final class TextFormat {
 
     public void printField(final FieldDescriptor field, final Object value, final Appendable output)
         throws IOException {
-      printField(field, value, multiLineOutput(output));
+      printField(field, value, setSingleLineOutput(output, this.singleLine));
     }
 
     private void printField(
@@ -323,11 +450,11 @@ public final class TextFormat {
         }
         switch (fieldType) {
           case BOOLEAN:
-            return Boolean.valueOf((boolean) getKey()).compareTo((boolean) b.getKey());
+            return ((Boolean) getKey()).compareTo((Boolean) b.getKey());
           case LONG:
-            return Long.valueOf((long) getKey()).compareTo((long) b.getKey());
+            return ((Long) getKey()).compareTo((Long) b.getKey());
           case INT:
-            return Integer.valueOf((int) getKey()).compareTo((int) b.getKey());
+            return ((Integer) getKey()).compareTo((Integer) b.getKey());
           case STRING:
             String aString = (String) getKey();
             String bString = (String) b.getKey();
@@ -358,12 +485,19 @@ public final class TextFormat {
     public void printFieldValue(
         final FieldDescriptor field, final Object value, final Appendable output)
         throws IOException {
-      printFieldValue(field, value, multiLineOutput(output));
+      printFieldValue(field, value, setSingleLineOutput(output, this.singleLine));
     }
 
     private void printFieldValue(
         final FieldDescriptor field, final Object value, final TextGenerator generator)
         throws IOException {
+      if (shouldRedact(field, generator)) {
+        generator.print(REDACTED_MARKER);
+        if (field.getJavaType() == FieldDescriptor.JavaType.MESSAGE) {
+          generator.eol();
+        }
+        return;
+      }
       switch (field.getType()) {
         case INT32:
         case SINT32:
@@ -419,7 +553,12 @@ public final class TextFormat {
           break;
 
         case ENUM:
-          generator.print(((EnumValueDescriptor) value).getName());
+          if (((EnumValueDescriptor) value).getIndex() == -1) {
+            // Unknown enum value, print the number instead of the name.
+            generator.print(Integer.toString(((EnumValueDescriptor) value).getNumber()));
+          } else {
+            generator.print(((EnumValueDescriptor) value).getName());
+          }
           break;
 
         case MESSAGE:
@@ -429,20 +568,82 @@ public final class TextFormat {
       }
     }
 
+    private boolean shouldRedactOptionValue(EnumValueDescriptor optionValue) {
+      if (optionValue.getOptions().hasDebugRedact()) {
+        return optionValue.getOptions().getDebugRedact();
+      }
+      return false;
+    }
+
+    // The criteria for redacting a field is as follows: 1) The enablingSafeDebugFormat printer
+    // option
+    // must be on. 2) The field must be marked by a debug_redact=true option, or is marked by an
+    // option with an enum value that is marked by a debug_redact=true option.
+    @SuppressWarnings("unchecked") // List<EnumValueDescriptor> guaranteed by protobuf runtime.
+    private boolean shouldRedact(final FieldDescriptor field, TextGenerator generator) {
+      // Skip checking if it's sensitive and potentially reporting it if we don't care about either.
+      if (!shouldReport(generator.fieldReporterLevel) && !enablingSafeDebugFormat) {
+        return false;
+      }
+      boolean isSensitive = false;
+      if (field.getOptions().hasDebugRedact() && field.getOptions().getDebugRedact()) {
+        isSensitive = true;
+      } else {
+        // Iterate through every option; if it's an enum, we check each enum value for debug_redact.
+        for (Map.Entry<Descriptors.FieldDescriptor, Object> entry :
+            field.getOptions().getAllFields().entrySet()) {
+          Descriptors.FieldDescriptor option = entry.getKey();
+          if (option.getType() != Descriptors.FieldDescriptor.Type.ENUM) {
+            continue;
+          }
+          if (option.isRepeated()) {
+            for (EnumValueDescriptor value : (List<EnumValueDescriptor>) entry.getValue()) {
+              if (shouldRedactOptionValue(value)) {
+                isSensitive = true;
+                break;
+              }
+            }
+          } else {
+            EnumValueDescriptor optionValue = (EnumValueDescriptor) entry.getValue();
+            if (shouldRedactOptionValue(optionValue)) {
+              isSensitive = true;
+              break;
+            }
+          }
+        }
+      }
+      return isSensitive && enablingSafeDebugFormat;
+    }
+
+    private boolean shouldReport(FieldReporterLevel level) {
+      return sensitiveFieldReportingLevel.get().compareTo(level) < 0;
+    }
+
     /** Like {@code print()}, but writes directly to a {@code String} and returns it. */
     public String printToString(final MessageOrBuilder message) {
+      return printToString(message, FieldReporterLevel.PRINTER_PRINT_TO_STRING);
+    }
+
+    String printToString(final MessageOrBuilder message, FieldReporterLevel level) {
       try {
         final StringBuilder text = new StringBuilder();
-        print(message, text);
+        if (enablingSafeDebugFormat) {
+          applyUnstablePrefix(text);
+        }
+        print(message, text, level);
         return text.toString();
       } catch (IOException e) {
         throw new IllegalStateException(e);
       }
     }
+
     /** Like {@code print()}, but writes directly to a {@code String} and returns it. */
     public String printToString(final UnknownFieldSet fields) {
       try {
         final StringBuilder text = new StringBuilder();
+        if (enablingSafeDebugFormat) {
+          applyUnstablePrefix(text);
+        }
         print(fields, text);
         return text.toString();
       } catch (IOException e) {
@@ -453,56 +654,62 @@ public final class TextFormat {
     /**
      * Generates a human readable form of this message, useful for debugging and other purposes,
      * with no newline characters.
+     *
+     * @deprecated Use {@code
+     *     this.printer().emittingSingleLine(true).printToString(MessageOrBuilder)}
      */
+    @Deprecated
     public String shortDebugString(final MessageOrBuilder message) {
-      try {
-        final StringBuilder text = new StringBuilder();
-        print(message, singleLineOutput(text));
-        return text.toString();
-      } catch (IOException e) {
-        throw new IllegalStateException(e);
-      }
+      return this.emittingSingleLine(true)
+          .printToString(message, FieldReporterLevel.SHORT_DEBUG_STRING);
     }
 
     /**
      * Generates a human readable form of the field, useful for debugging and other purposes, with
      * no newline characters.
+     *
+     * @deprecated Use {@code this.emittingSingleLine(true).printFieldToString(FieldDescriptor,
+     *     Object)}
      */
+    @Deprecated
+    @InlineMe(replacement = "this.emittingSingleLine(true).printFieldToString(field, value)")
     public String shortDebugString(final FieldDescriptor field, final Object value) {
-      try {
-        final StringBuilder text = new StringBuilder();
-        printField(field, value, singleLineOutput(text));
-        return text.toString();
-      } catch (IOException e) {
-        throw new IllegalStateException(e);
-      }
+      return this.emittingSingleLine(true).printFieldToString(field, value);
     }
 
     /**
      * Generates a human readable form of the unknown fields, useful for debugging and other
      * purposes, with no newline characters.
+     *
+     * @deprecated Use {@code this.emittingSingleLine(true).printToString(UnknownFieldSet)}
      */
+    @Deprecated
+    @InlineMe(replacement = "this.emittingSingleLine(true).printToString(fields)")
     public String shortDebugString(final UnknownFieldSet fields) {
-      try {
-        final StringBuilder text = new StringBuilder();
-        printUnknownFields(fields, singleLineOutput(text));
-        return text.toString();
-      } catch (IOException e) {
-        throw new IllegalStateException(e);
-      }
+      return this.emittingSingleLine(true).printToString(fields);
     }
 
     private static void printUnknownFieldValue(
-        final int tag, final Object value, final TextGenerator generator) throws IOException {
+        final int tag, final Object value, final TextGenerator generator, boolean redact)
+        throws IOException {
       switch (WireFormat.getTagWireType(tag)) {
         case WireFormat.WIRETYPE_VARINT:
-          generator.print(unsignedToString((Long) value));
+          generator.print(
+              redact
+                  ? String.format("UNKNOWN_VARINT %s", REDACTED_MARKER)
+                  : unsignedToString((Long) value));
           break;
         case WireFormat.WIRETYPE_FIXED32:
-          generator.print(String.format((Locale) null, "0x%08x", (Integer) value));
+          generator.print(
+              redact
+                  ? String.format("UNKNOWN_FIXED32 %s", REDACTED_MARKER)
+                  : String.format((Locale) null, "0x%08x", (Integer) value));
           break;
         case WireFormat.WIRETYPE_FIXED64:
-          generator.print(String.format((Locale) null, "0x%016x", (Long) value));
+          generator.print(
+              redact
+                  ? String.format("UNKNOWN_FIXED64 %s", REDACTED_MARKER)
+                  : String.format((Locale) null, "0x%016x", (Long) value));
           break;
         case WireFormat.WIRETYPE_LENGTH_DELIMITED:
           try {
@@ -511,18 +718,22 @@ public final class TextFormat {
             generator.print("{");
             generator.eol();
             generator.indent();
-            printUnknownFields(message, generator);
+            printUnknownFields(message, generator, redact);
             generator.outdent();
             generator.print("}");
           } catch (InvalidProtocolBufferException e) {
             // If not parseable as a message, print as a String
+            if (redact) {
+              generator.print(String.format("UNKNOWN_STRING %s", REDACTED_MARKER));
+              break;
+            }
             generator.print("\"");
             generator.print(escapeBytes((ByteString) value));
             generator.print("\"");
           }
           break;
         case WireFormat.WIRETYPE_START_GROUP:
-          printUnknownFields((UnknownFieldSet) value, generator);
+          printUnknownFields((UnknownFieldSet) value, generator, redact);
           break;
         default:
           throw new IllegalArgumentException("Bad tag: " + tag);
@@ -534,7 +745,7 @@ public final class TextFormat {
       for (Map.Entry<FieldDescriptor, Object> field : message.getAllFields().entrySet()) {
         printField(field.getKey(), field.getValue(), generator);
       }
-      printUnknownFields(message.getUnknownFields(), generator);
+      printUnknownFields(message.getUnknownFields(), generator, this.enablingSafeDebugFormat);
     }
 
     private void printSingleField(
@@ -554,7 +765,7 @@ public final class TextFormat {
         }
         generator.print("]");
       } else {
-        if (field.getType() == FieldDescriptor.Type.GROUP) {
+        if (field.isGroupLike()) {
           // Groups must be serialized with their original capitalization.
           generator.print(field.getMessageType().getName());
         } else {
@@ -580,24 +791,32 @@ public final class TextFormat {
     }
 
     private static void printUnknownFields(
-        final UnknownFieldSet unknownFields, final TextGenerator generator) throws IOException {
+        final UnknownFieldSet unknownFields, final TextGenerator generator, boolean redact)
+        throws IOException {
+      if (unknownFields.isEmpty()) {
+        return;
+      }
       for (Map.Entry<Integer, UnknownFieldSet.Field> entry : unknownFields.asMap().entrySet()) {
         final int number = entry.getKey();
         final UnknownFieldSet.Field field = entry.getValue();
-        printUnknownField(number, WireFormat.WIRETYPE_VARINT, field.getVarintList(), generator);
-        printUnknownField(number, WireFormat.WIRETYPE_FIXED32, field.getFixed32List(), generator);
-        printUnknownField(number, WireFormat.WIRETYPE_FIXED64, field.getFixed64List(), generator);
+        printUnknownField(
+            number, WireFormat.WIRETYPE_VARINT, field.getVarintList(), generator, redact);
+        printUnknownField(
+            number, WireFormat.WIRETYPE_FIXED32, field.getFixed32List(), generator, redact);
+        printUnknownField(
+            number, WireFormat.WIRETYPE_FIXED64, field.getFixed64List(), generator, redact);
         printUnknownField(
             number,
             WireFormat.WIRETYPE_LENGTH_DELIMITED,
             field.getLengthDelimitedList(),
-            generator);
+            generator,
+            redact);
         for (final UnknownFieldSet value : field.getGroupList()) {
           generator.print(entry.getKey().toString());
           generator.print(" {");
           generator.eol();
           generator.indent();
-          printUnknownFields(value, generator);
+          printUnknownFields(value, generator, redact);
           generator.outdent();
           generator.print("}");
           generator.eol();
@@ -606,12 +825,16 @@ public final class TextFormat {
     }
 
     private static void printUnknownField(
-        final int number, final int wireType, final List<?> values, final TextGenerator generator)
+        final int number,
+        final int wireType,
+        final List<?> values,
+        final TextGenerator generator,
+        boolean redact)
         throws IOException {
       for (final Object value : values) {
         generator.print(String.valueOf(number));
         generator.print(": ");
-        printUnknownFieldValue(wireType, value, generator);
+        printUnknownFieldValue(wireType, value, generator, redact);
         generator.eol();
       }
     }
@@ -637,12 +860,13 @@ public final class TextFormat {
     }
   }
 
-  private static TextGenerator multiLineOutput(Appendable output) {
-    return new TextGenerator(output, false);
+  private static TextGenerator setSingleLineOutput(Appendable output, boolean singleLine) {
+    return new TextGenerator(output, singleLine, Printer.FieldReporterLevel.NO_REPORT);
   }
 
-  private static TextGenerator singleLineOutput(Appendable output) {
-    return new TextGenerator(output, true);
+  private static TextGenerator setSingleLineOutput(
+      Appendable output, boolean singleLine, Printer.FieldReporterLevel fieldReporterLevel) {
+    return new TextGenerator(output, singleLine, fieldReporterLevel);
   }
 
   /** An inner class for writing text to the output stream. */
@@ -654,10 +878,17 @@ public final class TextFormat {
     // we would do in response to this is emit the (zero length) indentation, so it has no effect.
     // Setting it false here does however suppress an unwanted leading space in single-line mode.
     private boolean atStartOfLine = false;
+    // Indicate which Protobuf public stringification API (e.g AbstractMessage.toString()) is
+    // called.
+    private final Printer.FieldReporterLevel fieldReporterLevel;
 
-    private TextGenerator(final Appendable output, boolean singleLineMode) {
+    private TextGenerator(
+        final Appendable output,
+        boolean singleLineMode,
+        Printer.FieldReporterLevel fieldReporterLevel) {
       this.output = output;
       this.singleLineMode = singleLineMode;
+      this.fieldReporterLevel = fieldReporterLevel;
     }
 
     /**
@@ -1240,7 +1471,13 @@ public final class TextFormat {
     }
   }
 
-  /** Thrown when encountering an unknown field while parsing a text format message. */
+  /** Obsolete exception, once thrown when encountering an unknown field while parsing a text
+  format message.
+  *
+  * @deprecated This exception is unused and will be removed in the next breaking release
+  (v5.x.x).
+  */
+  @Deprecated
   public static class UnknownFieldParseException extends ParseException {
     private final String unknownField;
 
@@ -1720,15 +1957,12 @@ public final class TextFormat {
           final String lowerName = name.toLowerCase(Locale.US);
           field = type.findFieldByName(lowerName);
           // If the case-insensitive match worked but the field is NOT a group,
-          if (field != null && field.getType() != FieldDescriptor.Type.GROUP) {
+          if (field != null && !field.isGroupLike()) {
             field = null;
           }
-        }
-        // Again, special-case group names as described above.
-        if (field != null
-            && field.getType() == FieldDescriptor.Type.GROUP
-            && !field.getMessageType().getName().equals(name)) {
-          field = null;
+          if (field != null && !field.getMessageType().getName().equals(name)) {
+            field = null;
+          }
         }
 
         if (field == null) {
@@ -1985,7 +2219,10 @@ public final class TextFormat {
 
             if (tokenizer.lookingAtInteger()) {
               final int number = tokenizer.consumeInt32();
-              value = enumType.findValueByNumber(number);
+              value =
+                  enumType.isClosed()
+                      ? enumType.findValueByNumber(number)
+                      : enumType.findValueByNumberCreatingIfUnknown(number);
               if (value == null) {
                 String unknownValueMsg =
                     "Enum type \""
