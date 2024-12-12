@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # - install depends tools
 # yum -y install git
@@ -20,7 +20,7 @@ rm -rf build
 mkdir build
 pushd build
 cmake -DCMAKE_BUILD_TYPE=relwithdebinfo -Dprotobuf_BUILD_TESTS=OFF ..
-cmake --build .
+cmake --build . --config relwithdebinfo
 popd
 
 # popd
