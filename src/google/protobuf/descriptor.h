@@ -886,7 +886,7 @@ class PROTOBUF_EXPORT FieldDescriptor : private internal::SymbolBase,
                              //               IsTypePackable(type())
   bool is_map() const;       // shorthand for type() == TYPE_MESSAGE &&
                              // message_type()->options().map_entry()
-
+  bool is_msg() const;       // type() == TYPE_MESSAGE
   // Whether or not this field is packable and packed.  In proto2, packable
   // fields must have `packed = true` specified.  In proto3, all packable fields
   // are packed by default unless `packed = false` is specified.
@@ -2750,6 +2750,10 @@ inline bool FieldDescriptor::is_packable() const {
 
 inline bool FieldDescriptor::is_map() const {
   return type() == TYPE_MESSAGE && is_map_message_type();
+}
+
+inline bool FieldDescriptor::is_msg() const {
+  return type() == TYPE_MESSAGE;
 }
 
 inline const OneofDescriptor* FieldDescriptor::real_containing_oneof() const {

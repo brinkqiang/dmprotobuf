@@ -48,6 +48,8 @@ option(protobuf_ALLOW_CCACHE "Adjust build flags to allow for ccache support." O
 
 # We support Unity (Jumbo) builds best-effort.
 option(protobuf_USE_UNITY_BUILD "Enable Unity (Jumbo) build for" OFF)
+option(protobuf_BUILD_SHARED_LIBS "Build Shared Libraries" OFF)
+
 if (BUILD_SHARED_LIBS)
   set(protobuf_BUILD_SHARED_LIBS_DEFAULT ON)
 else (BUILD_SHARED_LIBS)
